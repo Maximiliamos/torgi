@@ -6,6 +6,7 @@ from sqlalchemy import delete, exists, select, update, or_
 from bankrotai.db import Base, CanonicalLot, LotIssueReport, ProcessedLot, SourceLot
 from bankrotai.logic import log_action
 from bankrotai.services.reported_lot_repair import _state
+from bankrotai.services.source_lot_exclusions import register_exclusion
 
 
 def _remove_direct_children(session, target: str, ids: list[int], *, preserve: set[str]) -> dict[str, int]:
@@ -62,6 +63,8 @@ def remove_reviewed_reported_lots(
                       "expected_state": state})
     if apply:
         for item in items:
+            register_exclusion(session, source_system=item["source_system"], external_id=item["external_id"],
+                               reason="explicit_user_request_remove_incorrect_reviewed_lots")
             log_action(session, "operator", "remove_reviewed_reported_lot", "lot", str(item["lot_id"]),
                        {"external_id": item["external_id"], "source_system": item["source_system"],
                         "reason": "explicit_user_request_remove_incorrect_reviewed_lots"})

@@ -1,10 +1,11 @@
 from datetime import timedelta
+import pytest
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from bankrotai.core import utc_now
-from bankrotai.db import Base, MapDataset, MapTile, ProcessedLot
+from bankrotai.db import Base, CanonicalLot, MapDataset, MapTile, ProcessedLot, SourceLot
 from bankrotai.services.quality import map_delivery_reconciliation_report
 
 
@@ -24,6 +25,40 @@ def _mapped_lot(external_id: str) -> ProcessedLot:
         current_geo_source="photon",
         current_geo_confidence="high",
     )
+
+
+@pytest.mark.parametrize("include_invalid", [False, True])
+def test_reconciliation_uses_publication_property_rules_without_waiving_extras(include_invalid):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        garage, vehicle, lease = [_mapped_lot(name) for name in ("garage", "vehicle", "lease")]
+        garage.title, garage.category = "Гараж для автомобиля с земельным участком", "real_estate"
+        vehicle.title, vehicle.category = "Грузовой автомобиль МАЗ", "real_estate"
+        lease.title, lease.category = "Земельный участок", "land"
+        session.add_all([garage, vehicle, lease])
+        session.flush()
+        canonical = CanonicalLot(canonical_key="rental", title=lease.title)
+        session.add(canonical)
+        session.flush()
+        session.add(SourceLot(source_system=lease.source_system, external_id=lease.external_id,
+                              processed_lot_id=lease.id, canonical_lot_id=canonical.id,
+                              raw_data={"raw": {"typeTransaction": "RENT"}}))
+        session.flush()
+        members = [garage.id, vehicle.id] if include_invalid else [garage.id]
+        dataset = MapDataset(version="test-r9", is_current=True, status="ready",
+                             point_count=len(members), tile_count=1, published_at=utc_now())
+        session.add(dataset)
+        session.flush()
+        session.add(MapTile(dataset_id=dataset.id, z=12, x=0, y=0, feature_count=len(members),
+                            etag="a" * 64, payload_json={"features": [{"kind": "lot", "id": key} for key in members]}))
+        session.commit()
+        result = map_delivery_reconciliation_report(session)
+        assert result["db_eligible_count"] == 1
+        assert result["property_rejected_count"] == 2
+        assert result["missing_from_dataset_count"] == 0
+        assert result["extra_in_dataset_count"] == int(include_invalid)
+        assert result["ok"] is not include_invalid
 
 
 def test_map_delivery_reconciliation_matches_db_and_dataset() -> None:

@@ -453,6 +453,7 @@ def translate_category(category: str) -> str:
     mapping = { 
         "apartment": "Квартира", 
         "house": "Жилой дом", 
+        "living": "Жилое помещение",
         "commercial": "Коммерческая недв.", 
         "commercial_room": "Нежилое помещение", 
         "commercial_building": "Нежилое здание", 

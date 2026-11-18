@@ -31,6 +31,7 @@ class SourceSyncResult:
     items_archived: int = 0
     items_failed: int = 0
     items_rejected: int = 0
+    items_user_excluded: int = 0
     quarantined_records: int = 0
     quarantine_reasons: dict[str, int] = field(default_factory=dict)
     quarantine_samples: list[dict[str, Any]] = field(default_factory=list)

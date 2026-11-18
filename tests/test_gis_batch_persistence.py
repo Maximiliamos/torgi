@@ -188,6 +188,10 @@ def test_batch_update_requeues_geocoding_when_geo_input_changes() -> None:
         assert processed is not None
         processed.geo_input_hash = "a" * 64
         processed.needs_geo_check = False
+        processed.current_geo_lat = 57.6261
+        processed.current_geo_lon = 39.8845
+        processed.current_geo_source = "nspd"
+        processed.current_geo_confidence = "high"
         session.commit()
 
         changed = make_lot("gis-1")
@@ -199,6 +203,10 @@ def test_batch_update_requeues_geocoding_when_geo_input_changes() -> None:
         session.refresh(processed)
         assert processed.needs_geo_check is True
         assert processed.geo_input_hash is None
+        assert processed.current_geo_lat is None
+        assert processed.current_geo_lon is None
+        assert processed.current_geo_source is None
+        assert processed.current_geo_confidence is None
 
 
 def test_batch_refresh_keeps_existing_canonical_even_if_legacy_key_is_cadastral() -> None:
@@ -211,6 +219,9 @@ def test_batch_refresh_keeps_existing_canonical_even_if_legacy_key_is_cadastral(
         assert canonical is not None
         canonical.canonical_key = "cadastral:76:23:010101:1"
         old_canonical_id = canonical.id
+        processed = session.scalar(select(ProcessedLot))
+        processed.current_geo_lat, processed.current_geo_lon = 57.6261, 39.8845
+        processed.current_geo_source, processed.current_geo_confidence = "nspd", "high"
         session.commit()
 
         add_run(session, "run-legacy-1")
@@ -225,6 +236,28 @@ def test_batch_refresh_keeps_existing_canonical_even_if_legacy_key_is_cadastral(
         assert again.canonical_lot_id == old_canonical_id
         assert session.scalar(select(func.count()).select_from(CanonicalLot)) == 1
         assert float(again.current_price or 0) == 400_000
+        assert processed.current_geo_lat == 57.6261
+        assert processed.current_geo_lon == 39.8845
+
+
+def test_batch_alternate_cadastre_change_clears_old_coordinates() -> None:
+    factory = sessions()
+    with factory() as session:
+        first = make_lot("cad-list")
+        first.raw_data["cadastral_numbers"] = [first.cadastral_number, "76:23:010101:2"]
+        add_run(session, "cad-run-1")
+        persist_changed_lots_batch(session, [first], "cad-run-1")
+        row = session.scalar(select(ProcessedLot))
+        row.current_geo_lat, row.current_geo_lon = 57.6261, 39.8845
+        session.commit()
+        changed = make_lot("cad-list")
+        changed.raw_data["cadastral_numbers"] = [changed.cadastral_number, "76:23:010101:3"]
+        add_run(session, "cad-run-2")
+        persist_changed_lots_batch(session, [changed], "cad-run-2")
+        session.commit()
+        session.refresh(row)
+        assert row.current_geo_lat is None and row.current_geo_lon is None
+        assert row.needs_geo_check is True
 
 
 def test_cdtrf_equivalent_timezone_deadline_skips_but_real_deadline_change_persists() -> None:
@@ -386,8 +419,10 @@ def test_batch_semantic_skip_sql_benchmark(capsys) -> None:
     assert changed_stats.semantic_skipped == 0
     assert changed_stats.persisted == 1585
     assert changed_stats.chunks == 4
-    assert skip_sql == 12
-    assert changed_sql == 24
+    # Four bounded exclusion lookups protect explicitly user-deleted identities,
+    # in addition to the twelve set-based semantic-skip statements.
+    assert skip_sql == 16
+    assert changed_sql == 28
 
 
 def test_shallow_batch_refresh_does_not_erase_existing_detailed_address():

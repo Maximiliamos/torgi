@@ -90,6 +90,14 @@ def is_sale_real_estate_lot(lot: NormalizedLot) -> bool:
     transaction = " ".join(str(value) for value in (
         lot.auction_type, raw.get("trade_type"), raw.get("typeTransaction"), raw.get("bidding_form"),
     ) if value).casefold()
+    original_value = raw.get("raw")
+    original = original_value if isinstance(original_value, dict) else {}
+    for value in (raw.get("typeTransaction"), original.get("typeTransaction"), lot.auction_type):
+        code = value.get("code") or value.get("name") or value.get("title") if isinstance(value, dict) else value
+        if str(code or "").strip().upper() in {"RENT", "RENTAL", "LEASE"}:
+            return False
+        if any(term in str(value or "").casefold() for term in RENTAL_TERMS):
+            return False
     if any(term in transaction for term in RENTAL_TERMS):
         return False
     # A sale may disclose tenants or retained occupancy rights. Reject the lease
@@ -101,5 +109,8 @@ def is_sale_real_estate_lot(lot: NormalizedLot) -> bool:
         r"к\s+аренде\s+предлага|размер[^.]{0,100}\s+арендн\w*\s+плат)",
         text, re.IGNORECASE,
     )
-    title_is_lease = re.match(r"\s*(?:аренда|арендный|субаренда)\b", lot.title or "", re.IGNORECASE)
+    title_is_lease = re.match(
+        r"\s*(?:аренда|арендный|субаренда|(?:продажа\s+)?прав[оа]\s+аренды)\b",
+        lot.title or "", re.IGNORECASE,
+    )
     return not lease_transaction and not title_is_lease and not has_disallowed_real_estate_terms(text)

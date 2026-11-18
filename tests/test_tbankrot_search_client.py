@@ -360,7 +360,7 @@ def test_tbankrot_enrichment_fetches_detail_when_only_auction_date_is_missing(mo
     assert calls == ["https://tbankrot.ru/item?id=7896849"]
     assert enriched.auction_at == datetime(2026, 10, 23, 10, 0)
     assert enriched.start_price == 3_500_000
-    assert enriched.raw_data["detail_enrichment_version"] == 4
+    assert enriched.raw_data["detail_enrichment_version"] == 5
 
 
 def test_tbankrot_address_stops_before_encumbrance_metadata() -> None:

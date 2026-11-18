@@ -13,7 +13,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Path
 
 PROPERTY_CATEGORIES = frozenset({
-    "apartment", "house", "land", "parking", "commercial_room",
+    "apartment", "living", "house", "land", "parking", "commercial_room",
     "commercial_building", "commercial_building_with_land",
     "unfinished", "complex", "real_estate",
 })

@@ -11,6 +11,31 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Mapping
 
+
+def cached_detail_expired(raw: Mapping[str, Any], max_age_hours: int) -> bool:
+    """Last-seen time cannot substitute for an independent detail observation."""
+    try:
+        fetched = datetime.fromisoformat(str(raw["detail_fetched_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError, TypeError):
+        return True
+    fetched = fetched.replace(tzinfo=timezone.utc) if fetched.tzinfo is None else fetched.astimezone(timezone.utc)
+    age = datetime.now(timezone.utc) - fetched
+    return not timedelta(0) <= age <= timedelta(hours=max_age_hours)
+
+
+def reuse_detail_evidence(lot: Any, existing: Any, previous_raw: dict, current_raw: dict) -> None:
+    """Merge a shallow refresh without erasing independently observed detail facts."""
+    for field in ("address", "cadastral_number", "description", "application_deadline",
+                  "auction_at", "procedure_number"):
+        setattr(lot, field, getattr(existing, field) or getattr(lot, field))
+    for field in ("start_price", "current_price"):
+        if getattr(lot, field) is None:
+            setattr(lot, field, getattr(existing, field))
+    lot.detail_level = "detail"
+    lot.raw_data = {**previous_raw, **current_raw}
+    if not current_raw.get("cadastral_numbers") and previous_raw.get("cadastral_numbers"):
+        lot.raw_data["cadastral_numbers"] = previous_raw["cadastral_numbers"]
+
 # Changes to a trusted source revision affect freshness, not necessarily the
 # actual business content. These raw fields are deliberately not used as the
 # business fingerprint; their parsed projections ARE compared below.

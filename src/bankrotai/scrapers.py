@@ -220,6 +220,8 @@ class TorgiGovClient:
         "BIDDING": "scheduled",
         "DETERMINING_WINNER": "scheduled",
         "COMPLETED": "closed",
+        "SUCCEED": "closed",
+        "APPLICATIONS_SUBMISSION_SUSPENDED": "paused",
         "CANCELED": "closed",
         "CANCELLED": "closed",
         "FAILED": "closed",
@@ -1223,7 +1225,7 @@ class TorgiGovClient:
             payload,
             "lotStatus", "status", "statusCode", "lotStatusName", "statusName", "state",
         ))
-        published_text = self._pick(payload, "firstVersionPublicationDate", "publishDate", "publicationDate", "publishedAt")
+        published_text = self._pick(payload, "firstVersionPublicationDate", "noticeFirstVersionPublicationDate", "publishDate", "publicationDate", "publishedAt")
         bidd_end_text = self._pick(payload, "biddEndTime", "biddEndDate", "applicationEndDate", "applicationsEndDate")
         auction_start_text = self._pick(payload, "auctionStartDate", "biddingDate", "tradeDate")
         lot_url = self._clean_text(self._pick(payload, "lotUrl", "url", "href", "link"))
@@ -1316,6 +1318,10 @@ class TorgiGovClient:
             detail_level="search",
             raw_data=raw_data,
             published_at=self._parse_date(published_text),
+            notice_number=self._clean_text(notice_number) or None,
+            application_start_at=self._parse_date(self._pick(payload, "biddStartTime", "applicationStartDate")),
+            deposit_amount=self._pick_price(payload, "deposit", "depositAmount"),
+            auction_step_amount=self._pick_price(payload, "priceStep", "auctionStepAmount"),
             application_deadline=self._parse_date(bidd_end_text),
             auction_at=self._parse_date(auction_start_text),
             auction_timezone=(
@@ -1512,6 +1518,8 @@ class TorgiGovClient:
         text = self._clean_text(status).lower()
         if not text:
             return "unknown"
+        if text.upper() in self._STATUS_MAP:
+            return self._STATUS_MAP[text.upper()]
         for raw, normalized in self._STATUS_MAP.items():
             if raw.lower() in text:
                 return normalized

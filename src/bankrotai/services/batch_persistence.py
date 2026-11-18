@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import and_, bindparam, case, insert, or_, select, update
+from sqlalchemy import String, and_, bindparam, case, cast, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -217,6 +217,9 @@ def persist_changed_lots_batch(
     """Set-based exact-identity persistence; fuzzy reconciliation remains a later phase."""
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
+    from bankrotai.services.source_lot_exclusions import assert_not_excluded
+
+    assert_not_excluded(session, lots)
     skipped = persisted = chunks = 0
     for offset in range(0, len(lots), batch_size):
         chunk_skipped, chunk_persisted = _persist_changed_lots_chunk(
@@ -439,6 +442,9 @@ def _persist_changed_lots_chunk(
         or_(
             ProcessedLot.address.is_distinct_from(processed_excluded.address),
             ProcessedLot.cadastral_number.is_distinct_from(processed_excluded.cadastral_number),
+            cast(ProcessedLot.cadastral_numbers, String).is_distinct_from(
+                cast(processed_excluded.cadastral_numbers, String)
+            ),
             ProcessedLot.title.is_distinct_from(processed_excluded.title),
             ProcessedLot.description.is_distinct_from(processed_excluded.description),
             ProcessedLot.region_name.is_distinct_from(processed_excluded.region_name),
@@ -453,6 +459,13 @@ def _persist_changed_lots_chunk(
         (geo_input_changed, None),
         else_=ProcessedLot.geo_input_hash,
     )
+    # Coordinates are evidence for the old geo inputs. Do not publish them
+    # alongside a newly changed address while waiting for the geo worker.
+    for geo_field in ("current_geo_lat", "current_geo_lon", "current_geo_source",
+                      "current_geo_confidence", "current_geo_observed_at"):
+        processed_updates[geo_field] = case(
+            (geo_input_changed, None), else_=getattr(ProcessedLot, geo_field),
+        )
     session.execute(
         processed_statement.on_conflict_do_update(
             index_elements=["source_system", "external_id"],

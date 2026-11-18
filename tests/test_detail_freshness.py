@@ -9,6 +9,7 @@ from bankrotai.services.detail_freshness import (
     SOURCE_BUSINESS_FIELDS,
     compare_source_values,
     detail_is_fresh,
+    cached_detail_expired,
 )
 
 
@@ -108,3 +109,20 @@ def test_detail_freshness_rejects_future_timestamp():
         accepted_versions=frozenset({"1"}),
         previous_listing_fingerprint="a", listing_fingerprint="a",
     )
+
+
+@pytest.mark.parametrize("timestamp", [None, "invalid", "2020-01-01T00:00:00Z", "2999-01-01T00:00:00Z"])
+def test_generic_detail_cache_rejects_unknown_old_or_future_evidence(timestamp):
+    assert cached_detail_expired({"detail_fetched_at": timestamp}, 24)
+
+
+def test_generic_detail_cache_uses_utc_offset_and_preserves_zero_prices():
+    from bankrotai.services.detail_freshness import reuse_detail_evidence
+    recent = datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/Moscow")).isoformat()
+    assert not cached_detail_expired({"detail_fetched_at": recent}, 24)
+    fields = dict(address=None, cadastral_number=None, description="", application_deadline=None,
+                  auction_at=None, procedure_number=None)
+    existing = SimpleNamespace(**fields, start_price=100, current_price=90)
+    incoming = SimpleNamespace(**fields, start_price=None, current_price=0)
+    reuse_detail_evidence(incoming, existing, {}, {})
+    assert incoming.start_price == 100 and incoming.current_price == 0

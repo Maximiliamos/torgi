@@ -17,15 +17,18 @@ from bankrotai.regions import REGIONS_BY_CODE
 from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
 
 
-SOURCE_FIELDS = (
-    "title", "description", "category", "address", "cadastral_number", "region_slug", "region_name", "detail_level", "start_price",
+DEFAULT_REPORT_FIELDS = (
+    "title", "description", "category", "address", "cadastral_number", "region_slug", "region_name", "detail_level", "start_price", "lot_url", "source_url",
     "current_price", "auction_status", "application_start_at", "application_deadline",
     "auction_at", "auction_timezone", "deposit_amount", "deposit_percent", "auction_type",
     "public_offer_schedule", "next_interval_price", "next_price_reduction_at",
 )
+SOURCE_FIELDS = DEFAULT_REPORT_FIELDS + (
+    "published_at", "auction_step_amount", "auction_step_percent", "notice_number", "procedure_number",
+)
 DATE_FIELDS = {field.name for field in fields(NormalizedLot) if "datetime" in str(field.type)}
 PROCESSED_FIELDS = frozenset(column.name for column in ProcessedLot.__table__.columns)
-MONEY_FIELDS = {"start_price", "current_price", "deposit_amount", "next_interval_price"}
+MONEY_FIELDS = {"start_price", "current_price", "deposit_amount", "next_interval_price", "auction_step_amount"}
 
 
 def decode_lot(payload: dict) -> NormalizedLot:
@@ -56,20 +59,47 @@ def _state(record, source) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _repair_state(session, record, source, apply):
+    query = select(CanonicalLot).where(
+        CanonicalLot.id == source.canonical_lot_id if source is not None
+        else CanonicalLot.legacy_processed_lot_id == record.id
+    )
+    canonical = session.scalar(query.with_for_update() if apply else query)
+    links = session.scalar(select(func.count()).select_from(SourceLot).where(
+        SourceLot.canonical_lot_id == canonical.id,
+    )) if canonical is not None else 0
+    values = [[column.name, _plain(getattr(canonical, column.name))]
+              for column in CanonicalLot.__table__.columns] if canonical is not None else []
+    state = hashlib.sha256(json.dumps([_state(record, source), values, links], sort_keys=True, default=str).encode()).hexdigest()
+    return state, canonical, links
+
+
 def repair_reported_lots(
     session, *, evidence: list[dict], apply: bool = False,
     allow_reviewed_source_fields: bool = False, expected_states: dict[int, str] | None = None,
     recheck_geo_ids: set[int] | None = None, last_report: int = 44,
 ) -> dict[str, Any]:
+    reported_ids = set(session.scalars(select(LotIssueReport.lot_id).where(LotIssueReport.id <= last_report)))
+    return _repair_exact_lots(
+        session, evidence=evidence, allowed_lot_ids=reported_ids, apply=apply,
+        allow_reviewed_source_fields=allow_reviewed_source_fields,
+        expected_states=expected_states, recheck_geo_ids=recheck_geo_ids,
+    )
+
+
+def _repair_exact_lots(
+    session, *, evidence: list[dict], allowed_lot_ids: set[int], apply: bool = False,
+    allow_reviewed_source_fields: bool = False, expected_states: dict[int, str] | None = None,
+    recheck_geo_ids: set[int] | None = None, audit_scope: str = "report",
+) -> dict[str, Any]:
     """Never insert lots, merge identities, clear reviews, or reconcile a source."""
     if not evidence or len(evidence) > 100:
-        raise ValueError("Repair requires 1..100 exact reported lots")
+        raise ValueError("Repair requires 1..100 exact lots")
     ids = [int(item["lot_id"]) for item in evidence]
     if len(ids) != len(set(ids)) or any(value <= 0 for value in ids):
         raise ValueError("Repair identities must be unique positive lot IDs")
-    reported_ids = set(session.scalars(select(LotIssueReport.lot_id).where(LotIssueReport.id <= last_report)))
-    if not set(ids) <= reported_ids:
-        raise ValueError("Repair includes a lot outside the exact report allowlist")
+    if not set(ids) <= allowed_lot_ids:
+        raise ValueError("Repair includes a lot outside the exact repair allowlist")
     items = []
     for item in evidence:
         lot_id = int(item["lot_id"])
@@ -93,11 +123,14 @@ def repair_reported_lots(
             source = session.scalar(identity_query.with_for_update() if apply else identity_query)
             if source is not None and source.processed_lot_id not in {None, lot_id}:
                 raise ValueError(f"Source identity is linked to another projection: {lot_id}")
-        state = _state(record, source)
+        state, canonical, links = _repair_state(session, record, source, apply)
         if apply and (expected_states is None or expected_states.get(lot_id) != state):
             raise ValueError(f"Repair preview is stale: {lot_id}")
-        observed = set(lot.raw_data.get("repair_observed_fields", SOURCE_FIELDS))
-        observed.update(name for name in ("region_slug", "region_name", "detail_level") if getattr(lot, name) is not None)
+        source_before = {column.name: getattr(source, column.name) for column in SourceLot.__table__.columns} if source else {}
+        old_region_code = record.region_code
+        observed = set(lot.raw_data.get("repair_observed_fields", DEFAULT_REPORT_FIELDS))
+        metadata = ("region_slug", "region_name", "detail_level") if audit_scope == "report" or "cadastral_number" in observed else ("detail_level",)
+        observed.update(name for name in metadata if getattr(lot, name) is not None)
         observed &= set(SOURCE_FIELDS)
         changes = {}
         for name in SOURCE_FIELDS:
@@ -110,10 +143,15 @@ def repair_reported_lots(
         if lot.auction_status == "closed" and not record.is_archived:
             changes["is_archived"] = {"before": False, "after": True}
         protected = record.review_status is not None and not allow_reviewed_source_fields
+        different_asset = (
+            bool("cadastral_number" in observed and lot.cadastral_number and canonical is not None and canonical.cadastral_number != lot.cadastral_number)
+            or ("category" in observed and lot.category in {"receivable", "receivables", "debt", "claim", "car", "vehicle", "equipment", "transport", "movable"})
+        )
         entry = {"lot_id": lot_id, "source_system": lot.source_system, "external_id": lot.external_id,
                  "review_status": record.review_status, "protected": protected, "expected_state": state,
                  "changes": changes, "exclude_from_property_map": not is_sale_real_estate_lot(lot)}
         entry["restore_source_provenance"] = source is None or source.processed_lot_id is None
+        entry["isolate_canonical"] = bool(canonical is not None and links and links > 1 and different_asset)
         items.append(entry)
         if not apply or protected:
             continue
@@ -122,9 +160,17 @@ def repair_reported_lots(
         for name in SOURCE_FIELDS:
             if name not in observed:
                 setattr(lot, name, getattr(record, name) if name in PROCESSED_FIELDS else getattr(source, name, None))
-        canonical = session.get(CanonicalLot, source.canonical_lot_id) if source is not None else None
-        links = session.scalar(select(func.count()).select_from(SourceLot).where(SourceLot.canonical_lot_id == canonical.id)) if canonical is not None else 0
-        if canonical is not None and links and links > 1 and lot.cadastral_number and canonical.cadastral_number != lot.cadastral_number:
+        if source is not None:
+            # Partial public evidence must not clear procedure, party or contact
+            # fields that are outside this repair's explicit field scope.
+            for field in fields(NormalizedLot):
+                if field.name not in SOURCE_FIELDS and field.name != "raw_data" and hasattr(source, field.name):
+                    setattr(lot, field.name, getattr(source, field.name))
+            lot.raw_data = {**(source.raw_data or {}), **lot.raw_data}
+        canonical_before = ({name: getattr(canonical, name) for name in
+                            ("id", "title", "category", "address", "cadastral_number", "region_code", "area")}
+                            if canonical is not None else {})
+        if canonical is not None and entry["isolate_canonical"]:
             # A previously poisoned source row must not overwrite another asset's canonical.
             if canonical.legacy_processed_lot_id == lot_id:
                 canonical.legacy_processed_lot_id = None
@@ -134,11 +180,11 @@ def repair_reported_lots(
                                      category=lot.category, address=lot.address, cadastral_number=lot.cadastral_number)
             session.add(canonical)
             session.flush()
-            assert source is not None
-            source.canonical_lot_id = canonical.id
+            if source is not None:
+                source.canonical_lot_id = canonical.id
         for name in observed & PROCESSED_FIELDS:
             if name == "auction_status":
-                apply_lot_status(session, record, lot.auction_status, "exact_report_repair")
+                apply_lot_status(session, record, lot.auction_status, f"exact_{audit_scope}_repair")
             else:
                 value = getattr(lot, name)
                 setattr(record, name, Decimal(str(value)) if name in MONEY_FIELDS and value is not None else value)
@@ -150,6 +196,26 @@ def repair_reported_lots(
         canonical = session.get(CanonicalLot, source.canonical_lot_id)
         assert canonical is not None
         canonical.category = lot.category
+        # _sync_source_lot is a full projection writer. A partial source repair
+        # must preserve each projection's own unobserved values independently,
+        # rather than copying an unverified ProcessedLot value into SourceLot.
+        changed_source = (observed & {column.name for column in SourceLot.__table__.columns}) | {
+            "canonical_lot_id", "processed_lot_id", "raw_data", "last_seen_at", "missing_successful_runs",
+        }
+        if "auction_status" in observed:
+            changed_source.update({"source_status", "is_active", "is_archived", "archived_at", "archive_reason"})
+        region_observed = bool(observed & {"region_slug", "region_name", "cadastral_number"})
+        if region_observed:
+            changed_source.add("region_code")
+        else:
+            record.region_code = old_region_code
+        for name, value in source_before.items():
+            if name not in changed_source:
+                setattr(source, name, value)
+        if canonical.id == canonical_before.get("id"):
+            for name, value in canonical_before.items():
+                if name != "id" and name not in observed and not (name == "region_code" and region_observed):
+                    setattr(canonical, name, value)
         record.last_update = utc_now()
         if lot.auction_status == "closed":
             record.is_archived = True
@@ -158,9 +224,9 @@ def repair_reported_lots(
         if entry["exclude_from_property_map"]:
             record.is_archived = source.is_archived = True
             source.is_active = False
-            source.archive_reason = "exact_report_non_property_sale"
+            source.archive_reason = f"exact_{audit_scope}_non_property_sale"
             source.archived_at = source.archived_at or utc_now()
-        if any(name in changes for name in ("address", "cadastral_number", "title", "description")) or lot_id in (recheck_geo_ids or set()):
+        if entry["exclude_from_property_map"] or any(name in changes for name in ("address", "cadastral_number", "title", "description")) or lot_id in (recheck_geo_ids or set()):
             record.current_geo_lat = record.current_geo_lon = None
             record.current_geo_source = record.current_geo_confidence = None
             record.current_geo_observed_at = record.geo_input_hash = None
@@ -168,7 +234,7 @@ def repair_reported_lots(
             failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot_id))
             if failure is not None:
                 session.delete(failure)
-        log_action(session, "operator", "exact_report_source_repair", "lot", str(lot_id),
+        log_action(session, "operator", f"exact_{audit_scope}_source_repair", "lot", str(lot_id),
                    {"changes": changes, "review_status_preserved": record.review_status,
                     "external_id": lot.external_id, "source_system": lot.source_system})
     return {"apply": apply, "selected": len(ids), "protected": sum(bool(item.get("protected")) for item in items),

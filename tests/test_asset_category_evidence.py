@@ -13,6 +13,15 @@ from bankrotai.services.map_property_eligibility import map_property_eligible
     ("Volkswagen Caravelle 2008 г.в.", "Хранится в гараже на земельном участке", "car"),
     ("Грузовой автомобиль МАЗ", "Адрес хранения: нежилое помещение", "car"),
     ("Право требования к должнику", "Залог — квартира и земельный участок", "receivable"),
+    ("Гараж для автомобиля с земельным участком", "", "land"),
+    ("Гараж в ГСК Автомобиль 1", "", "parking"),
+    ("Нежилое здание (гараж легкового автомобиля) с земельным участком", "", "commercial_building_with_land"),
+    ("Земельный участок со стоянкой на 5 автомобилей", "", "land"),
+    ("Поручение №2438/Т. Автомобиль Форд. Место хранения — гараж", "", "car"),
+    ("Жилое помещение (комната)", "", "living"),
+    ("Комната площадью 12 кв.м.", "Доступ автомобильного транспорта", "real_estate"),
+    ("Оборудование", "Хранится в нежилом здании", "equipment"),
+    ("Оборудованное нежилое помещение", "", "commercial_room"),
 ])
 def test_primary_asset_is_not_replaced_by_incidental_description(title, description, expected):
     assert classify_category(title, description) == expected
@@ -26,3 +35,8 @@ def test_singular_receivable_cannot_be_published_as_collateral_real_estate():
 @pytest.mark.parametrize("title", ["Грузовой автомобиль МАЗ", "Право требования, залог — квартира"])
 def test_generic_source_property_label_does_not_override_primary_object(title):
     assert not map_property_eligible({"category": "real_estate", "title": title})
+
+
+@pytest.mark.parametrize("title", ["Гараж для автомобиля с земельным участком", "Гараж в ГСК Автомобиль 1"])
+def test_vehicle_word_in_property_title_is_not_a_vehicle_lot(title):
+    assert map_property_eligible({"category": "real_estate", "title": title})

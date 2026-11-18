@@ -29,7 +29,7 @@ CANARY_SOURCES = frozenset({"m-ets.ru", "cdtrf.ru"})
 LOT_ID = re.compile(r"^[1-9]\d{3,8}-[1-9]\d{0,4}$")
 METS_PAGE = re.compile(r"^[2-5]:[0-9a-f]{16}$")
 PROPERTY_CATEGORIES = frozenset({
-    "apartment", "house", "land", "parking", "commercial_room",
+    "apartment", "living", "house", "land", "parking", "commercial_room",
     "commercial_building", "commercial_building_with_land",
     "unfinished", "complex", "real_estate",
 })

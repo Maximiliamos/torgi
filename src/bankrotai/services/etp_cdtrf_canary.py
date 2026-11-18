@@ -35,7 +35,7 @@ PROPERTY_RIGHT = re.compile(
 # A receivable merely referring to property is not itself a property lot.
 NON_PROPERTY_CLAIM = re.compile(r"(?iu)(?:прав[оа]\s+требовани[яй]|дебиторск)")
 PROPERTY = frozenset({
-    "apartment", "house", "land", "parking", "commercial_room",
+    "apartment", "living", "house", "land", "parking", "commercial_room",
     "commercial_building", "commercial_building_with_land",
     "unfinished", "complex", "real_estate",
 })

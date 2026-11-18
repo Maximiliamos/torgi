@@ -14,7 +14,8 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from bankrotai.db import ProcessedLot
+from bankrotai.db import ProcessedLot, SourceLot
+from bankrotai.services.map_property_eligibility import map_property_evidence_columns
 
 MAX_WEB_MERCATOR_LAT = 85.05112878
 
@@ -29,12 +30,9 @@ def exact_map_input_fingerprint(session: Session, *, revision: str, layout: str,
     rows = session.execute(
         select(
             ProcessedLot.id,
-            ProcessedLot.title,
+            *map_property_evidence_columns(),
             ProcessedLot.current_price,
             ProcessedLot.start_price,
-            ProcessedLot.category,
-            ProcessedLot.description,
-            ProcessedLot.address,
             ProcessedLot.region_code,
             ProcessedLot.cadastral_number,
             ProcessedLot.auction_status,
@@ -43,6 +41,8 @@ def exact_map_input_fingerprint(session: Session, *, revision: str, layout: str,
             ProcessedLot.current_geo_lat,
             ProcessedLot.current_geo_lon,
         )
+        .select_from(ProcessedLot)
+        .outerjoin(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
         .where(
             ProcessedLot.duplicate_of_id.is_(None),
             ProcessedLot.is_archived.is_(False),

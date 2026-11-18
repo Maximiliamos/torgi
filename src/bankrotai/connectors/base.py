@@ -42,6 +42,7 @@ class AuctionConnector(ABC):
     detail_enrichment_version: int = 1
     compatible_detail_enrichment_versions: frozenset[int] | None = None
     detail_enrichment_on_listing_change: bool = True
+    detail_max_age_hours: int = 24
     safe_for_reconciliation: bool = True
     capabilities: frozenset[str] = frozenset({"search"})
 

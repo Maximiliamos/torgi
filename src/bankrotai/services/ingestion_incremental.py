@@ -119,6 +119,7 @@ def resume_checkpoint_for_source(
                     "items_updated": int(row.items_updated or 0),
                     "items_unchanged": int(row.items_unchanged or 0),
                     "items_failed": int(row.items_failed or 0),
+                    "items_user_excluded": int(checkpoint.get("items_user_excluded") or 0),
                     "detail_attempts": int(checkpoint.get("detail_attempts") or 0),
                     "detail_skipped_unchanged": int(checkpoint.get("detail_skipped_unchanged") or 0),
                     "retry_count": int(checkpoint.get("retry_count") or 0),
@@ -151,7 +152,7 @@ def prepare_source(
     result.connector_checkpoint = resume["connector_checkpoint"]
     result.resumed_from_run_id = resume["resumed_from_run_id"]
     for field in (
-        "pages_scanned", "items_seen", "items_inserted", "items_updated",
+        "pages_scanned", "items_seen", "items_inserted", "items_updated", "items_user_excluded",
         "items_unchanged", "items_failed", "detail_attempts",
         "detail_skipped_unchanged", "retry_count",
     ):
@@ -266,6 +267,7 @@ def checkpoint_payload(result: Any) -> dict[str, Any]:
         "progress_total": result.progress_total,
         "phase": result.phase,
         "items_rejected": result.items_rejected,
+        "items_user_excluded": result.items_user_excluded,
         "quarantined_records": result.quarantined_records,
         "quarantine_reasons": result.quarantine_reasons,
         "quarantine_samples": result.quarantine_samples,

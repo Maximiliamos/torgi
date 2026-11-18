@@ -402,7 +402,7 @@ def parse_mets_lot(html: str, url: str) -> NormalizedLot:
         category == "car"
         and cadastral_numbers
         and title_category in {
-            "apartment", "house", "land", "parking", "commercial_room",
+            "apartment", "living", "house", "land", "parking", "commercial_room",
             "commercial_building", "commercial_building_with_land",
             "unfinished", "complex", "real_estate",
         }
