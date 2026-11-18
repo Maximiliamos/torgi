@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from bankrotai.db import Base, CanonicalLot, ProcessedLot, SourceLot
+from bankrotai.db import Base, CanonicalLot, LotSyncRun, ProcessedLot, SourceLot
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import persist_lot
 from bankrotai.services.verified_source_repair import repair_verified_source_lots
@@ -90,6 +90,28 @@ def test_exact_scope_and_preview_are_required(context):
         repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids=set())
     with pytest.raises(ValueError, match="preview"):
         repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True)
+
+
+@pytest.mark.parametrize("observation_kind", ["explicit", "legacy_run"])
+def test_older_gis_proof_cannot_overwrite_a_newer_primary_ingestion(context, observation_kind):
+    session, record, source, evidence = context
+    observed_at = datetime.now(timezone.utc)
+    record.source_system = source.source_system = "torgi.gov.ru"
+    evidence[0]["normalized"]["source_system"] = "torgi.gov.ru"
+    evidence[0]["verification"].update(
+        source_url="https://torgi.gov.ru/1",
+        checked_at_utc=(observed_at - timedelta(minutes=1)).isoformat(),
+    )
+    if observation_kind == "explicit":
+        source.raw_data = {"ingestion_observed_at": observed_at.isoformat()}
+    else:
+        session.add(LotSyncRun(id="newer-primary-run", status="success", trigger_type="manual",
+                               started_at=observed_at.replace(tzinfo=None)))
+        source.last_sync_run_id = "newer-primary-run"
+    session.commit()
+    with pytest.raises(ValueError, match="older than the latest primary ingestion"):
+        repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert record.address == source.address == "Старый адрес"
 
 
 def test_collateral_claim_does_not_poison_shared_physical_asset(context):

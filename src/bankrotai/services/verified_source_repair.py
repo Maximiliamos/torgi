@@ -5,7 +5,7 @@ import json
 import re
 from urllib.parse import urlsplit
 from sqlalchemy import select
-from bankrotai.db import SourceLot
+from bankrotai.db import LotSyncRun, SourceLot
 
 from bankrotai.services.asset_category import classify_category
 from bankrotai.services.reported_lot_repair import SOURCE_FIELDS, _repair_exact_lots
@@ -20,6 +20,7 @@ def repair_verified_source_lots(
         raise ValueError("Verified repair requires 1..100 exact source records")
     now = datetime.now(timezone.utc)
     previous_verifications = {}
+    run_observations = {}
     for item in evidence:
         proof = item.get("verification", {})
         lot = item.get("normalized", {})
@@ -60,6 +61,19 @@ def repair_verified_source_lots(
             SourceLot.source_system == source, SourceLot.external_id == lot["external_id"],
         ))
         existing_raw = existing.raw_data or {} if existing is not None else {}
+        if existing is not None and source == "torgi.gov.ru":
+            stamp = existing_raw.get("ingestion_observed_at")
+            observed_at = datetime.fromisoformat(stamp) if stamp else None
+            if observed_at is None and existing.last_sync_run_id:
+                run_id = existing.last_sync_run_id
+                if run_id not in run_observations:
+                    run = session.get(LotSyncRun, run_id)
+                    run_observations[run_id] = run.started_at if run is not None else None
+                observed_at = run_observations[run_id]
+            if observed_at is not None:
+                observed_at = observed_at.replace(tzinfo=timezone.utc) if observed_at.tzinfo is None else observed_at
+                if observed_at > checked:
+                    raise ValueError("Source evidence is older than the latest primary ingestion observation")
         field_times = dict(existing_raw.get("verified_source_fields") or {})
         previous_verifications[item["lot_id"]] = field_times
         for name in observed:

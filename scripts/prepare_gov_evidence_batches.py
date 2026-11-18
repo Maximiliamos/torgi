@@ -21,6 +21,8 @@ def main():
     latest = {}
     journals = [root / name for name in ("torgi-gov-primary-verification.jsonl",
                  "gov-export-verification.jsonl", "gov-remaining-direct-verification.jsonl")]
+    if (root / "gov-ingestion-primary-verification.jsonl").exists():
+        journals.append(root / "gov-ingestion-primary-verification.jsonl")
     for path in journals:
         with path.open("rb") as handle:
             while True:
@@ -45,7 +47,7 @@ def main():
             with path.open("rb") as handle:
                 handle.seek(offset)
                 receipt = json.loads(handle.readline())
-            if receipt.get("scope") == "official_export_fields":
+            if receipt.get("scope") in {"official_export_fields", "official_ingestion_api_fields"}:
                 evidence.append({key: receipt[key] for key in ("lot_id", "normalized", "verification")})
             else:
                 capture = root / "gov-primary-json" / (identity.split(":", 1)[1] + "-" + receipt["sha256"] + ".json")

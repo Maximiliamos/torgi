@@ -2,13 +2,14 @@
 param([string]$Folder = '.artifacts/finish/gov-entire-verified',
       [Parameter(Mandatory)][string]$BackupMetadata,
       [Parameter(Mandatory)][string]$ExpectedDeploymentSha,
+      [ValidateRange(1,250000)][int]$ExpectedSelectedCount = 61872,
       [int]$MaximumGroups = 0)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $image = (docker inspect --format '{{.Config.Image}}' bankrotai-home-ingestion-worker).Trim()
 if ($image -ne "bankrotai-home-api:$ExpectedDeploymentSha") { throw 'Worker is not the expected accepted deployment' }
 $manifest = Get-Content -LiteralPath (Join-Path $root "$Folder/manifest.json") -Raw | ConvertFrom-Json
-if ($manifest.selected -ne 61872 -or $manifest.database_writes -ne 0) { throw 'Expected the complete exact-ID GIS evidence manifest' }
+if ($manifest.selected -ne $ExpectedSelectedCount -or $manifest.database_writes -ne 0) { throw 'Expected the complete exact-ID GIS evidence manifest' }
 $backup = Get-Content -LiteralPath $BackupMetadata -Raw | ConvertFrom-Json
 if ($backup.restore_verification -ne 'passed' -or
     (Get-FileHash -LiteralPath $backup.backup_file -Algorithm SHA256).Hash -ne $backup.sha256) {

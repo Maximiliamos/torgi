@@ -69,6 +69,53 @@ def test_batch_persistence_is_idempotent_and_keeps_processed_link() -> None:
         assert session.scalar(select(func.count()).select_from(CanonicalLot)) == 1
 
 
+def test_source_refresh_preserves_verification_and_tracks_real_ingestion_observation():
+    factory = sessions()
+    with factory() as session:
+        add_run(session, "proof-1")
+        persist_changed_lots_batch(session, [make_lot("proof-gis")], "proof-1")
+        session.commit()
+        source = session.scalar(select(SourceLot))
+        proof = {"start_price": {"sha256": "a" * 64, "checked_at_utc": "2026-11-18T00:00:00+00:00"}}
+        source.raw_data = {**source.raw_data, "verified_source_fields": proof}
+        session.commit()
+        changed = make_lot("proof-gis")
+        changed.start_price = 600000
+        add_run(session, "proof-2")
+        persist_changed_lots_batch(session, [changed], "proof-2")
+        session.commit()
+        session.expire_all()
+        source = session.scalar(select(SourceLot))
+        assert source.raw_data["verified_source_fields"] == proof
+        assert source.raw_data["ingestion_run_id"] == "proof-2"
+        assert datetime.fromisoformat(source.raw_data["ingestion_observed_at"]).tzinfo is not None
+        assert float(source.start_price) == 600000
+        add_run(session, "proof-3")
+        unchanged = make_lot("proof-gis")
+        unchanged.start_price = 600000
+        stats = persist_changed_lots_batch(session, [unchanged], "proof-3")
+        session.commit()
+        assert stats.semantic_skipped == 1
+
+
+def test_legacy_writer_preserves_verification_on_changed_source_fields():
+    factory = sessions()
+    with factory() as session:
+        persist_lot(session, make_lot("legacy-proof"))
+        session.commit()
+        source = session.scalar(select(SourceLot))
+        source.raw_data = {**source.raw_data, "verified_source_fields": {"title": {"sha256": "b" * 64}}}
+        session.commit()
+        changed = make_lot("legacy-proof")
+        changed.start_price = 700000
+        persist_lot(session, changed)
+        session.commit()
+        session.expire_all()
+        source = session.scalar(select(SourceLot))
+        assert source.raw_data["verified_source_fields"] == {"title": {"sha256": "b" * 64}}
+        assert float(source.start_price) == 700000
+
+
 def test_batch_shared_cadastre_without_same_publication_keeps_sales_separate() -> None:
     factory = sessions()
     with factory() as session:

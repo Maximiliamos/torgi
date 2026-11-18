@@ -421,7 +421,8 @@ def _sync_source_lot(
     source_lot.document_completeness = normalized.document_completeness or _raw_value(raw, "document_completeness")
     source_lot.inspection_procedure = normalized.inspection_procedure or _raw_value(raw, "inspection_procedure")
     source_lot.organizer_contact = normalized.organizer_contact or _raw_value(raw, "organizer_contact")
-    source_lot.raw_data = raw
+    from bankrotai.services.source_verification_metadata import preserve_verification_metadata
+    source_lot.raw_data = preserve_verification_metadata(raw, source_lot.raw_data)
     source_lot.last_seen_at = utc_now()
     normalized_source_status = normalize_status(normalized.auction_status)
     if normalized_source_status == "closed":

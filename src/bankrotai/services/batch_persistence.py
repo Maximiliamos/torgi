@@ -12,6 +12,7 @@ from bankrotai.db import CanonicalLot, LotPriceEvent, LotStatusHistory, Processe
 from bankrotai.business_time import to_moscow_datetime
 from bankrotai.domain import NormalizedLot
 from bankrotai.services.detail_freshness import compare_source_values
+from bankrotai.services.source_verification_metadata import ingestion_metadata
 from bankrotai.logic import (
     _canonical_key,
     _raw_value,
@@ -114,6 +115,7 @@ def _source_values(
 ) -> dict[str, Any]:
     raw = lot.raw_data or {}
     now = utc_now()
+    raw = ingestion_metadata(raw, existing.raw_data if existing else {}, run_id=run_id, observed_at=now)
     status = normalize_status(lot.auction_status)
     is_active = existing.is_active if existing is not None else True
     is_archived = existing.is_archived if existing is not None else False
