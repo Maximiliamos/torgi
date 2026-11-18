@@ -10,6 +10,12 @@ _CLAIM = re.compile(
     r"^\s*(?:(?:продажа|уступка|реализация)\s+)?(?:прав[оа]\s+требован|"
     r"дебиторск\w*\s+задолженн|денежн\w*\s+требован)", re.IGNORECASE,
 )
+_PROPERTY_TITLE_PREFIX = re.compile(
+    r"^\s*(?:гараж\b|гск\b|машино-?место\b|квартир\w*\b|"
+    r"земельн\w*\s+участ\w*\b|нежил\w*\s+помещен\w*\b|"
+    r"жил\w*\s+дом\b|здани\w*\b|склад\w*\b|цех\w*\b)",
+    re.IGNORECASE,
+)
 
 
 def _property(text: str) -> str | None:
@@ -24,7 +30,12 @@ def _property(text: str) -> str | None:
         return "house"
     if land:
         return "land"
-    if "машино-место" in text or "машиноместо" in text or "гараж" in text:
+    if (
+        "машино-место" in text
+        or "машиноместо" in text
+        or "гараж" in text
+        or bool(re.search(r"\bгск\b", text))
+    ):
         return "parking"
     if "незаверш" in text:
         return "unfinished"
@@ -38,6 +49,11 @@ def _property(text: str) -> str | None:
 def explicit_nonproperty_category(title: str) -> str | None:
     if _CLAIM.search(title):
         return "receivable"
+    # Strong property nouns at the beginning of the title define the offered
+    # object.  Vehicle words later in such titles usually describe permitted
+    # use/storage (for example "Гараж для автомобиля"), not a vehicle sale.
+    if _PROPERTY_TITLE_PREFIX.search(title):
+        return None
     if _VEHICLE.search(title) or _BRAND.search(title):
         return "car"
     return None
