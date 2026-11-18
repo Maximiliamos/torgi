@@ -335,6 +335,7 @@ def map_delivery_reconciliation_report(
     from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION
     from bankrotai.services.map_object_store import _verify_public_manifest
     from bankrotai.services.map_payload import ENDED_STATUSES
+    from bankrotai.services.map_property_eligibility import map_property_eligible, map_property_evidence_columns
 
     current_rows = session.scalars(
         select(MapDataset).where(MapDataset.is_current.is_(True))
@@ -373,13 +374,14 @@ def map_delivery_reconciliation_report(
     candidates = session.execute(
         select(
             ProcessedLot.id,
+            *map_property_evidence_columns(),
             ProcessedLot.region_code,
             ProcessedLot.cadastral_number,
             ProcessedLot.current_geo_lat,
             ProcessedLot.current_geo_lon,
             ProcessedLot.current_geo_observed_at,
             ProcessedLot.last_update,
-        ).where(
+        ).select_from(ProcessedLot).outerjoin(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id).where(
             ProcessedLot.duplicate_of_id.is_(None),
             ProcessedLot.is_archived.is_(False),
             ProcessedLot.auction_status.notin_(tuple(ENDED_STATUSES)),
@@ -392,7 +394,11 @@ def map_delivery_reconciliation_report(
     eligible_change_times: dict[int, tuple[datetime | None, datetime | None]] = {}
     spatial_rejections: dict[str, int] = {}
     spatial_rejected_ids: list[int] = []
+    property_rejections = 0
     for row in candidates:
+        if not map_property_eligible(row._mapping):
+            property_rejections += 1
+            continue
         lat = float(row.current_geo_lat)
         lon = float(row.current_geo_lon)
         raw_rejection = coordinate_region_sanity_rejection_reason(lat, lon, row.region_code)
@@ -542,6 +548,7 @@ def map_delivery_reconciliation_report(
         },
         "db_candidate_count": len(candidates),
         "db_eligible_count": len(eligible_ids),
+        "property_rejected_count": property_rejections,
         "spatially_rejected_count": sum(spatial_rejections.values()),
         "spatial_rejection_reasons": dict(sorted(spatial_rejections.items())),
         "spatial_rejected_sample_lot_ids": spatial_rejected_ids,

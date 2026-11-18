@@ -12,6 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from bankrotai.domain import NormalizedLot
+from bankrotai.services.asset_category import explicit_nonproperty_category
 from bankrotai.regions import normalize_region_code
 from bankrotai.scraper_contracts import TorgiRussiaSearchFilters, parse_money
 from bankrotai.torgi_russia_detail_fields import (
@@ -20,6 +21,7 @@ from bankrotai.torgi_russia_detail_fields import (
 from bankrotai.torgi_russia_address import extract_catalogue_address
 from bankrotai.torgi_russia_status import public_auction_status
 from bankrotai.torgi_russia_title_recovery import classify_rejections, recover_empty_title, recovery_failure_code
+from bankrotai.torgi_russia_payload import extract_next_flight_text, extract_named_json_value
 BASE_URL = "https://xn----etbpba5admdlad.xn--p1ai"
 PUBLIC_SEARCH_PATH = "/search"
 PUBLIC_API_SEARCH_URL = "https://xn--80aqu.xn----etbpba5admdlad.xn--p1ai/api/search"
@@ -408,33 +410,11 @@ class TorgiRussiaClient:
 
     @staticmethod
     def _extract_next_flight_text(html: str) -> str:
-        soup = BeautifulSoup(html, "html.parser")
-        parts: list[str] = []
-        for script in soup.find_all("script"):
-            script_text = script.string or script.get_text() or ""
-            match = re.fullmatch(r"\s*self\.__next_f\.push\((.*)\)\s*", script_text, flags=re.DOTALL)
-            if match is None:
-                continue
-            try:
-                payload = json.loads(match.group(1))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            if isinstance(payload, list) and len(payload) >= 2 and isinstance(payload[1], str):
-                parts.append(payload[1])
-        return "".join(parts)
+        return extract_next_flight_text(html)
 
     @staticmethod
     def _extract_named_json_value(text: str, key: str):
-        marker = f'"{key}":'
-        start = text.find(marker)
-        if start < 0:
-            return None
-        start += len(marker)
-        try:
-            value, _end = json.JSONDecoder().raw_decode(text, start)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return None
-        return value
+        return extract_named_json_value(text, key)
 
     @staticmethod
     def _extract_balanced_json_object(text: str, start: int) -> str | None:
@@ -674,7 +654,7 @@ class TorgiRussiaClient:
                     source_system="torgi-russia.ru",
                     title=title[:500],
                     description=title[:5000],
-                    category="real_estate",
+                    category=explicit_nonproperty_category(title) or "real_estate",
                     region_slug=normalize_region_code(region_name),
                     region_name=region_name,
                     address=address,

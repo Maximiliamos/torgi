@@ -10,12 +10,24 @@ _CLAIM = re.compile(
     r"^\s*(?:(?:продажа|уступка|реализация)\s+)?(?:прав[оа]\s+требован|"
     r"дебиторск\w*\s+задолженн|денежн\w*\s+требован)", re.IGNORECASE,
 )
+_PROPERTY_NOUN = re.compile(
+    r"\b(?:квартир\w*|помещени\w*|здани\w*|склад\w*|цех\w*|земельн\w*|"
+    r"участ(?:ок|ка|ку|ком|ке|ки|ков|ками|ках)|гараж\w*|коттедж\w*|комнат\w*|"
+    r"машино[- ]?мест\w*|жилой\s+дом|дом\s+жилой)\b", re.IGNORECASE,
+)
+_EQUIPMENT = re.compile(
+    r"^\s*(?:комплект\s+)?(?:оборудовани(?:е|я|ю|ем|и)|станок|станки|"
+    r"экскаватор\w*|погрузчик\w*|трактор\w*|бульдозер\w*|оргтехник\w*|мебель)\b",
+    re.IGNORECASE,
+)
 
 
 def _property(text: str) -> str | None:
-    land = "земельн" in text or "участ" in text or bool(re.search(r"\bзу\b", text))
+    land = "земельн" in text or bool(re.search(r"\b(?:зу|участ(?:ок|ка|ку|ком|ке|ки|ков|ками|ках))\b", text))
     if "квартир" in text:
         return "apartment"
+    if re.search(r"\bжил\w*\s+помещени", text):
+        return "living"
     if "помещени" in text:
         return "commercial_room"
     if any(word in text for word in ("здание", "склад", "цех")):
@@ -26,6 +38,8 @@ def _property(text: str) -> str | None:
         return "land"
     if "машино-место" in text or "машиноместо" in text or "гараж" in text:
         return "parking"
+    if re.search(r"\bкомнат\w*", text):
+        return "real_estate"
     if "незаверш" in text:
         return "unfinished"
     if "комплекс" in text:
@@ -38,7 +52,11 @@ def _property(text: str) -> str | None:
 def explicit_nonproperty_category(title: str) -> str | None:
     if _CLAIM.search(title):
         return "receivable"
-    if _VEHICLE.search(title) or _BRAND.search(title):
+    if _EQUIPMENT.search(title):
+        return "equipment"
+    vehicle = _VEHICLE.search(title) or _BRAND.search(title)
+    property_noun = _PROPERTY_NOUN.search(title)
+    if vehicle and (property_noun is None or vehicle.start() < property_noun.start()):
         return "car"
     return None
 

@@ -135,6 +135,23 @@ def test_detail_revealed_vehicle_is_rejected_before_persistence(sessions):
         assert session.scalars(select(SourceLot)).all() == []
 
 
+def test_user_deleted_identity_is_not_recreated_on_repeat_source_pass(sessions):
+    from bankrotai.services.source_lot_exclusions import register_exclusion
+    from bankrotai.services.ingestion_incremental import checkpoint_payload
+
+    with sessions() as session:
+        register_exclusion(session, source_system="test-source", external_id="deleted", reason="explicit user deletion")
+        session.commit()
+    service = NationwideIngestionService(sessions, connector_factory=lambda _: FakeConnector([[lot("deleted"), lot("kept")]]))
+    for _ in range(2):
+        run_id = service.create_run(triggered_by=None, trigger_type="test", total_sources=1)
+        output = asyncio.run(service.run(run_id, (SourceSyncSpec("test-source", {}, reconcile_missing=False),)))
+        assert output["sources"][0]["items_user_excluded"] == 1
+    with sessions() as session:
+        assert [row.external_id for row in session.scalars(select(ProcessedLot))] == ["kept"]
+    assert checkpoint_payload(SourceSyncResult(source_system="test-source", items_user_excluded=2))["items_user_excluded"] == 2
+
+
 def run_with(service: NationwideIngestionService, connector: AuctionConnector) -> tuple[str, dict]:
     service.connector_factory = lambda _source: connector
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
@@ -509,12 +526,15 @@ def test_connector_can_reuse_detail_when_listing_fingerprint_changes(sessions) -
             super().__init__()
             self.enrichment_calls = 0
             self.listing_fingerprint = "old-transport"
+            self.price = 500_000
 
         async def search(self, filters, cursor: str | None = None) -> ConnectorPage:
             item = lot("torgi-russia:stable-detail")
             item.source = "torgi-russia"
             item.source_system = self.source_id
             item.description = item.title
+            item.start_price = None
+            item.current_price = self.price
             item.address = None
             item.cadastral_number = None
             item.raw_data = {
@@ -528,6 +548,8 @@ def test_connector_can_reuse_detail_when_listing_fingerprint_changes(sessions) -
             item.address = "Ярославль, ул. Свободы, 1"
             item.cadastral_number = "76:23:010101:99"
             item.description = "Стабильные detail-поля"
+            item.start_price = 1_000_000
+            item.raw_data["cadastral_numbers"] = ["76:23:010101:99", "76:23:010101:98"]
             item.detail_level = "detail"
             item.raw_data["detail_enrichment_status"] = "success"
             return item
@@ -540,6 +562,7 @@ def test_connector_can_reuse_detail_when_listing_fingerprint_changes(sessions) -
     assert connector.enrichment_calls == 1
 
     connector.listing_fingerprint = "new-nextjs-transport"
+    connector.price = 450_000
     run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
     asyncio.run(service.run(run_id, (SourceSyncSpec(connector.source_id, {}),)))
 
@@ -551,6 +574,15 @@ def test_connector_can_reuse_detail_when_listing_fingerprint_changes(sessions) -
         assert row.cadastral_number == "76:23:010101:99"
         assert row.raw_data["listing_fingerprint"] == "new-nextjs-transport"
         assert row.raw_data["detail_enrichment_status"] == "success"
+        assert row.start_price == 1_000_000
+        assert row.current_price == 450_000
+        assert row.raw_data["cadastral_numbers"] == ["76:23:010101:99", "76:23:010101:98"]
+        # Catalogue observations must never extend the independent detail age.
+        row.raw_data = {**row.raw_data, "detail_fetched_at": "2020-01-01T00:00:00Z"}
+        session.commit()
+    run_id = service.create_run(triggered_by="admin", trigger_type="manual", total_sources=1)
+    asyncio.run(service.run(run_id, (SourceSyncSpec(connector.source_id, {}),)))
+    assert connector.enrichment_calls == 2
 
 
 def test_duplicate_external_id_across_pages_is_counted_once(sessions) -> None:

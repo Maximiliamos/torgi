@@ -685,6 +685,9 @@ def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, sourc
     return True
 
 def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: bool = False) -> ProcessedLot:
+    from bankrotai.services.source_lot_exclusions import assert_not_excluded
+
+    assert_not_excluded(session, [normalized])
     source_link = session.scalar(select(SourceLot).where(
         SourceLot.source_system == normalized.source_system,
         SourceLot.external_id == normalized.external_id,

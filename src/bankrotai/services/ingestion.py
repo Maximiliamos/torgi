@@ -35,6 +35,7 @@ from bankrotai.scrapers import (
     LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot,
 )
 from bankrotai.services.trusted_time import trusted_utc_now
+from bankrotai.services.detail_freshness import cached_detail_expired, reuse_detail_evidence
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
@@ -659,7 +660,17 @@ class NationwideIngestionService:
             raise ValueError("Scheduled ETP per-page detail cap must be 1..5")
         accepted = []
         page_ids: set[str] = set()
-        for lot in partition_normalized_lots(result, lots):
+        normalized_lots = list(partition_normalized_lots(result, lots))
+        from bankrotai.services.source_lot_exclusions import excluded_ids
+        with self.session_factory() as lookup_session:
+            excluded = excluded_ids(lookup_session, result.source_system, [lot.external_id for lot in normalized_lots])
+        for lot in normalized_lots:
+            if lot.external_id in excluded:
+                if lot.external_id not in result.seen_external_ids:
+                    result.items_user_excluded += 1
+                    result.items_seen += 1
+                    result.seen_external_ids.add(lot.external_id)
+                continue
             if not is_sale_real_estate_lot(lot):
                 continue
             if result.source_system == "nistp.ru" and not catalogue_row_eligible_for_detail(lot):
@@ -696,8 +707,10 @@ class NationwideIngestionService:
                     previous_raw.get("listing_fingerprint")
                     != current_raw.get("listing_fingerprint")
                 )
+                detail_expired = cached_detail_expired(previous_raw, connector.detail_max_age_hours)
                 needs_detail = (
                     existing is None
+                    or detail_expired
                     or (
                         connector.detail_enrichment_on_listing_change
                         and listing_changed
@@ -711,6 +724,7 @@ class NationwideIngestionService:
                             await connector.enrich_lot(lot)
                         enriched_raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
                         enriched_raw["detail_enrichment_version"] = connector.detail_enrichment_version
+                        enriched_raw["detail_fetched_at"] = datetime.utcnow().isoformat() + "Z"
                         lot.raw_data = enriched_raw
                     except Exception as exc:
                         logger.warning(
@@ -720,16 +734,7 @@ class NationwideIngestionService:
                         lot.raw_data = current_raw
                     return
                 assert existing is not None
-                lot.address = existing.address or lot.address
-                lot.cadastral_number = existing.cadastral_number or lot.cadastral_number
-                lot.description = existing.description or lot.description
-                lot.application_deadline = existing.application_deadline or lot.application_deadline
-                lot.auction_at = existing.auction_at or lot.auction_at
-                lot.procedure_number = existing.procedure_number or lot.procedure_number
-                lot.detail_level = "detail"
-                # Preserve persisted detail-only evidence while letting the
-                # fresh listing transport win for status/price/photos/fingerprint.
-                lot.raw_data = {**previous_raw, **current_raw}
+                reuse_detail_evidence(lot, existing, previous_raw, current_raw)
 
             await self._await_with_lease_heartbeat(
                 run_id,
@@ -1148,6 +1153,7 @@ class NationwideIngestionService:
             "items_archived": result.items_archived,
             "items_failed": result.items_failed,
             "items_rejected": result.items_rejected,
+            "items_user_excluded": result.items_user_excluded,
             "quarantined_records": result.quarantined_records,
             "quarantine_reasons": result.quarantine_reasons,
             "quarantine_samples": result.quarantine_samples,

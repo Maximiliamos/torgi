@@ -18,6 +18,7 @@ import "./styles.css";
 
 const CATEGORIES = [
   ["land", "Земля"], ["car", "Авто"], ["apartment", "Квартиры"], ["house", "Дома"],
+  ["living", "Жилые помещения"], ["real_estate", "Недвижимость"],
   ["commercial_room", "Помещения"], ["commercial_building", "Здания"],
   ["commercial_building_with_land", "Здания с землёй"], ["receivable", "Дебиторка"], ["other", "Прочее"]
 ] as const;
