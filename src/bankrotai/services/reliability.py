@@ -6,12 +6,13 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from bankrotai.connectors.registry import connector_registry
 from bankrotai.db import (
     AppSetting,
+    DiagnosticEvent,
     LotGeoSnapshot,
     MapDataset,
     ProcessedLot,
@@ -499,6 +500,38 @@ def reliability_map_delivery(session: Session, *, verify_manifest: bool = True) 
     }
 
 
+def _journal_category(component: str) -> str:
+    value = str(component or "").casefold()
+    if any(marker in value for marker in ("source", "ingest", "etp", "sync")):
+        return "sources"
+    if "geo" in value:
+        return "geo"
+    if "map" in value or "s3" in value:
+        return "map"
+    if any(marker in value for marker in ("api", "runner", "backup", "maintenance", "docker", "host")):
+        return "infrastructure"
+    return "system"
+
+
+def _reliability_journal(session: Session, *, limit: int = 50) -> list[dict[str, Any]]:
+    rows = session.scalars(
+        select(DiagnosticEvent)
+        .order_by(desc(DiagnosticEvent.created_at), desc(DiagnosticEvent.id))
+        .limit(max(1, min(limit, 100)))
+    ).all()
+    return [
+        {
+            "id": int(row.id),
+            "category": _journal_category(row.component),
+            "severity": str(row.severity or "info"),
+            "title": str(row.component or "Система"),
+            "detail": str(row.message or ""),
+            "at": row.created_at,
+        }
+        for row in rows
+    ]
+
+
 def _disk_status(host: dict[str, Any]) -> dict[str, Any]:
     disk = dict(host.get("disk") or {})
     free = disk.get("free_gb")
@@ -705,4 +738,5 @@ def build_reliability_summary(
         "integrity": integrity,
         "host": host,
         "data_quality": data_quality,
+        "journal": _reliability_journal(session),
     }
