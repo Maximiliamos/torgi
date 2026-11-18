@@ -150,3 +150,26 @@ def test_older_snapshot_cannot_overwrite_a_newer_verified_field(context):
     with pytest.raises(ValueError, match="older than"):
         repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
     assert record.address == "Старый адрес"
+
+
+def test_isolation_releases_other_legacy_owner_without_deleting_its_group(context):
+    session, record, source, evidence = context
+    shared = session.get(CanonicalLot, source.canonical_lot_id)
+    shared.legacy_processed_lot_id = None
+    orphan = CanonicalLot(canonical_key="old-owner", legacy_processed_lot_id=record.id,
+                          title="Historical group", category="land")
+    session.add_all([orphan, SourceLot(canonical_lot_id=shared.id, source_system="other.ru", external_id="other:2")])
+    session.commit()
+    values = evidence[0]["normalized"]
+    values["cadastral_number"] = "76:23:0000001:999"
+    values["raw_data"]["repair_observed_fields"].append("cadastral_number")
+    evidence[0]["verification"]["observed_fields"].append("cadastral_number")
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    session.flush()
+    assert orphan.legacy_processed_lot_id is None
+    assert orphan.title == "Historical group" and session.get(CanonicalLot, orphan.id) is orphan
+    assert source.canonical_lot_id not in {orphan.id, shared.id}
+    assert record.review_status == "approved"
