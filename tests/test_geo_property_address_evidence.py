@@ -134,7 +134,7 @@ def test_cadastre_supplies_region_to_resolver_with_mocked_providers(monkeypatch)
             raise AssertionError("Cadastral region was not supplied")
         return CadastralObjectResult(
             query=address,
-            address="Прологи, Ленинградская область",
+            address="Прологи, участок 15, Ленинградская область",
             lat=59.0, lon=29.0,
             source="photon",
             confidence="high",
@@ -144,7 +144,7 @@ def test_cadastre_supplies_region_to_resolver_with_mocked_providers(monkeypatch)
     result = geo.resolve_lot_geo(
         cadastral_number="47:22:0325001:373",
         title="Земельный участок, расположенный по адресу: "
-              "Ленинградская область, Волосовский район, д Прологи.",
+              "Ленинградская область, Волосовский район, д Прологи, участок 15.",
         address=None, region_name=None, bulk=True,
     )
     assert result and result.lat == 59.0
@@ -222,7 +222,7 @@ def test_resolver_repairs_stale_listing_region_when_asset_and_cadastre_agree(mon
         assert "Московская область" in address
         return CadastralObjectResult(
             query=address,
-            address="Московская область, Раменский район, д. Першино",
+            address="Московская область, Раменский район, д. Першино, участок 15",
             lat=55.3,
             lon=38.2,
             source="photon",
@@ -232,12 +232,12 @@ def test_resolver_repairs_stale_listing_region_when_asset_and_cadastre_agree(mon
     monkeypatch.setattr(geo.CADASTRAL_GEOCODER, "search_by_address", local_geocoder)
     result = geo.resolve_lot_geo(
         cadastral_number="50:23:0050563:2759",
-        address="Российская Федерация, Московская область, р-н Раменский, д. Першино",
-        title="Земельный участок 600 м², Московская обл., Раменский р-н, д. Першино",
+        address="Российская Федерация, Московская область, р-н Раменский, д. Першино, участок 15",
+        title="Земельный участок 600 м², Московская обл., Раменский р-н, д. Першино, участок 15",
         description=(
             "Земельный участок площадью 600 кв.м, кадастровый номер "
             "50:23:0050563:2759. Адрес: Российская Федерация, Московская область, "
-            "р-н Раменский, д. Першино"
+            "р-н Раменский, д. Першино, участок 15"
         ),
         region_name="Ярославская область",  # stale listing-page hint
         region_code="76",  # stale persisted code too

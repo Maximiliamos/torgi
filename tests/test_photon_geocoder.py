@@ -34,7 +34,7 @@ def test_photon_rejects_wrong_city_and_uses_normalized_candidate() -> None:
         "geometry": {"coordinates": [39.8828964, 57.6290494]},
         "properties": {
             "city": "Ярославль", "state": "Ярославская область",
-            "street": "улица Свердлова", "housenumber": "5А",
+            "street": "улица Свердлова", "housenumber": "5А/17",
         },
     }
     responses = []

@@ -39,6 +39,9 @@ from bankrotai.services.geo_resilience import (
     record_provider_success,
     require_provider,
 )
+from bankrotai.services.geo_feature_precision import (
+    address_precision_rejection, normalize_house, property_number, whole_locality_match,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1451,27 +1454,7 @@ class PhotonGeocoder:
             re.IGNORECASE,
         )
         expected_street = street_match.group(1).strip().casefold() if street_match else ""
-        house_match = re.search(r"(?:д\.|дом|вл\.|владение)\s*([0-9]+[а-яa-z]?)", address, re.IGNORECASE)
-
-        def normalize_house(value: str) -> str:
-            confusables = str.maketrans(
-                {
-                    "а": "a",
-                    "в": "b",
-                    "с": "c",
-                    "е": "e",
-                    "х": "x",
-                    "к": "k",
-                    "м": "m",
-                    "н": "h",
-                    "о": "o",
-                    "р": "p",
-                    "т": "t",
-                }
-            )
-            return re.sub(r"\s+", "", value.casefold()).translate(confusables).split("/", 1)[0]
-
-        expected_house = normalize_house(house_match.group(1)) if house_match else ""
+        expected_house = property_number(address)
         from bankrotai.regions import normalize_region_code, region_code_from_text
 
         expected_region = region_code_from_text(address) or normalize_region_code(address)
@@ -1530,7 +1513,7 @@ class PhotonGeocoder:
                 state = str(props.get("state") or "")
                 street = str(props.get("street") or "")
                 house = normalize_house(str(props.get("housenumber") or ""))
-                if expected_locality and expected_locality not in locality_text:
+                if expected_locality and not whole_locality_match(expected_locality, locality_text):
                     continue
                 # A street-level or settlement-level centroid must not be
                 # published as a precise apartment/house coordinate. Photon
@@ -1587,7 +1570,7 @@ class PhotonGeocoder:
         return {
             "centroid_lat": float(coordinates[1]),
             "centroid_lon": float(coordinates[0]),
-            "geo_confidence": "high" if score >= 3 else "medium",
+            "geo_confidence": ("high" if score >= 3 else "medium") if expected_house else "low",
             "trace_reason": "Local Photon / OpenStreetMap",
             "matched_address": matched_address or None,
         }
@@ -1950,7 +1933,7 @@ def validate_geocoding_result(
 
     observed_text = (result.address or "").casefold()
     expected_locality = expected_locality_name(address)
-    if expected_locality and observed_text and expected_locality not in observed_text:
+    if expected_locality and observed_text and not whole_locality_match(expected_locality, observed_text):
         return False, "locality_name_mismatch"
     # City-distance anchors are valid only for an explicitly parsed locality.
     # A city token elsewhere in free-form prose may be an owner/organizer name
@@ -1977,6 +1960,10 @@ def validate_geocoding_result(
     )
     if spatial_rejection:
         return False, spatial_rejection
+    if result.source in {"photon", "nominatim"}:
+        precision_reason = address_precision_rejection(result.query or address, result.address)
+        if precision_reason:
+            return False, precision_reason
     return True, "validated"
 
 

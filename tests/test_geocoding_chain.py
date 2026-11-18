@@ -16,7 +16,8 @@ ADDRESS = "г. Ярославль, ул. Свердлова, д. 5а/17"
 
 def result(source: str, lat: float = 57.6291139, lon: float = 39.8828543, *, cad: str | None = CAD):
     return CadastralObjectResult(
-        query=CAD,
+        query=ADDRESS if source in {"photon", "nominatim"} else CAD,
+        address=ADDRESS if source in {"photon", "nominatim"} else None,
         cadastral_number=cad,
         lat=lat,
         lon=lon,
@@ -230,12 +231,12 @@ def test_explicit_unsupported_region_code_rejects_new_geo_result() -> None:
 def test_canonical_region_code_keeps_valid_address_only_coordinate() -> None:
     valid, reason = validate_geocoding_result(
         CadastralObjectResult(
-            query="address-only",
+            query="г. Казань, ул. Кремлевская, дом 1",
             lat=55.7963,
             lon=49.1088,
             source="photon",
             confidence="high",
-            address=None,
+            address="Казань, Кремлевская улица, дом 1",
         ),
         cadastral_number=None,
         address=None,
