@@ -160,7 +160,7 @@ def reliability_sources(session: Session) -> dict[str, Any]:
         "configured_total": len(configured),
         "registered_total": len(registered),
         "monitored_total": len(rows),
-        "paused_total": sum(bool(row["paused"]) for row in rows),
+        "paused_total": sum(bool(row["paused"]) for row in rows if row["configured"]),
         "healthy": sum(row["overall_status"] == "healthy" for row in rows if row["configured"]),
         "degraded": sum(row["overall_status"] == "degraded" for row in rows if row["configured"]),
         "failed": sum(row["overall_status"] == "failed" for row in rows if row["configured"]),
