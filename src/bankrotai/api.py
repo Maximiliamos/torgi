@@ -90,11 +90,7 @@ from bankrotai.services.quality import (
     map_delivery_reconciliation_report,
     operational_quality_report,
 )
-from bankrotai.services.reliability import (
-    build_reliability_sources,
-    build_reliability_summary,
-    reliability_map_delivery,
-)
+from bankrotai.services.reliability_api import create_reliability_router
 from bankrotai.services.map_source_filters import (
     map_source_catalogue, parse_source_selection,
 )
@@ -485,6 +481,7 @@ app.include_router(create_etp_incremental_preview_router(require_admin))
 app.include_router(create_etp_qa_map_router(require_admin))
 app.include_router(create_etp_parser_checklist_router(require_admin))
 app.include_router(create_lot_issue_report_router(require_user))
+app.include_router(create_reliability_router(require_user))
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}
@@ -2446,37 +2443,6 @@ def compare_lot_documents(
 def get_data_quality():
     with read_session_scope() as session:
         return data_quality_snapshot(session).model_dump(mode="json")
-
-
-@app.get("/api/reliability/summary")
-def get_reliability_summary(actor: AuthenticatedUser = Depends(require_user)):
-    with read_session_scope() as session:
-        return jsonable_encoder(
-            build_reliability_summary(
-                session,
-                deployment_sha=os.environ.get("BANKROTAI_DEPLOY_SHA", ""),
-                app_version=__version__,
-                schema_revision=SCHEMA_REVISION,
-                api_read_only=settings.api_read_only,
-            )
-        )
-
-
-@app.get("/api/reliability/sources")
-def get_reliability_sources(actor: AuthenticatedUser = Depends(require_user)):
-    with read_session_scope() as session:
-        return jsonable_encoder(build_reliability_sources(session))
-
-
-@app.get("/api/reliability/map-delivery")
-def get_reliability_map_delivery(
-    verify_manifest: bool = Query(True),
-    actor: AuthenticatedUser = Depends(require_user),
-):
-    with read_session_scope() as session:
-        return jsonable_encoder(
-            reliability_map_delivery(session, verify_manifest=verify_manifest)
-        )
 
 
 @app.get("/api/quality/operational", dependencies=[Depends(require_admin)])
