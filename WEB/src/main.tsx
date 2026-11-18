@@ -244,6 +244,7 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
   const [action, setAction] = React.useState("");
   const [sourceFilter, setSourceFilter] = React.useState<"attention" | "all" | "healthy" | "paused" | "pilot">("attention");
   const [sourceSearch, setSourceSearch] = React.useState("");
+  const [journalFilter, setJournalFilter] = React.useState<"all" | "errors" | "sources" | "geo" | "map" | "infrastructure">("all");
   const [notice, setNotice] = React.useState("");
 
   const load = React.useCallback(async () => {
@@ -331,6 +332,29 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
       return true;
     });
   }, [sourceFilter, sourceSearch, sources]);
+
+  const filteredJournal = React.useMemo(() => {
+    const rows = summary?.journal || [];
+    return rows.filter((item) => {
+      if (journalFilter === "all") return true;
+      if (journalFilter === "errors") return ["error", "critical"].includes(item.severity.toLocaleLowerCase("ru-RU"));
+      return item.category === journalFilter;
+    });
+  }, [journalFilter, summary?.journal]);
+
+  const reasonTargets: Record<string, string> = {
+    sources: "reliability-sources",
+    coverage: "reliability-sources",
+    geo_paused: "reliability-geo",
+    geo_tail: "reliability-geo",
+    map_delivery: "reliability-map",
+    map_unverified: "reliability-map",
+    database_integrity: "reliability-integrity",
+    backup: "reliability-infrastructure",
+    disk: "reliability-infrastructure",
+    disk_warning: "reliability-infrastructure",
+    runner_diagnostic: "reliability-infrastructure",
+  };
 
   if (!summary && !error) return <section className="reliabilityPage"><State>Загрузка состояния системы</State></section>;
 
@@ -455,11 +479,12 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
         {summary.system.reasons.map((reason) => <article key={reason.code} data-severity={reason.severity}>
           {reason.severity === "critical" ? <AlertCircle /> : <AlertTriangle />}
           <div><strong>{reason.title}</strong><span>{reason.detail}</span></div>
+          {reasonTargets[reason.code] && <a href={`#${reasonTargets[reason.code]}`}>Открыть</a>}
         </article>)}
       </div> : <div className="reliabilityEmpty"><CheckCircle2 /><span>Актуальных проблем, влияющих на общий статус, нет.</span></div>}
     </section>}
 
-    <section className="pageCard reliabilitySourcesCard">
+    <section id="reliability-sources" className="pageCard reliabilitySourcesCard">
       <div className="reliabilitySectionHeading">
         <div><span className="eyebrow">Сбор данных</span><h2>Источники</h2></div>
         <small>{reliabilityNumber(filteredSources.length)} из {reliabilityNumber(sources.length)}</small>
@@ -511,7 +536,7 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
     </section>
 
     {summary && <div className="reliabilityTwoColumn">
-      <section className="pageCard reliabilityGeoCard">
+      <section id="reliability-geo" className="pageCard reliabilityGeoCard">
         <div className="reliabilitySectionHeading"><div><span className="eyebrow">Геоданные</span><h2>GEO</h2></div><span className={`healthBadge ${geo?.paused ? "neutral" : "warn"}`}>{geo?.paused ? "На паузе" : "Активно"}</span></div>
         <p className="reliabilityScope">{geo?.scope_ru}</p>
         <div className="reliabilityGeoProgress"><span style={{ width: `${Math.min(100, Math.max(0, geo?.percent || 0))}%` }} /></div>
@@ -532,7 +557,7 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
         </div>}
       </section>
 
-      <section className="pageCard reliabilityMapCard">
+      <section id="reliability-map" className="pageCard reliabilityMapCard">
         <div className="reliabilitySectionHeading"><div><span className="eyebrow">Публикация</span><h2>Карта</h2></div><span className={`healthBadge ${map?.status === "ok" ? "ok" : map?.status === "incident" ? "bad" : "warn"}`}>{map?.status === "ok" ? "Доставка подтверждена" : map?.status === "incident" ? "Нарушение" : "Требует проверки"}</span></div>
         <div className="reliabilityMapHeadline"><strong>{reliabilityNumber(map?.point_count)}</strong><span>объектов · {map?.dataset_version || "нет версии"}</span></div>
         <div className="reliabilityDeliveryChain">
@@ -561,7 +586,7 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
         <div className="reliabilityHistoryLine"><span>Историческая база</span><strong>{reliabilityNumber(dataQuality?.historical_total)} записей</strong></div>
       </section>
 
-      <section className="pageCard">
+      <section id="reliability-infrastructure" className="pageCard">
         <div className="reliabilitySectionHeading"><div><span className="eyebrow">Хост</span><h2>Инфраструктура</h2></div><span className={`healthBadge ${infrastructureDegraded ? "warn" : "ok"}`}>{infrastructureDegraded ? "Есть ограничения" : "Норма"}</span></div>
         <div className="reliabilityInfrastructureList">
           <article><Database /><div><span>API и база данных</span><strong>{host?.api.status === "ok" && host?.database.status === "ok" ? "Готовы" : "Требуют внимания"}</strong></div></article>
@@ -573,7 +598,7 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
       </section>
     </div>}
 
-    {summary && <section className="pageCard reliabilityIntegrityCard">
+    {summary && <section id="reliability-integrity" className="pageCard reliabilityIntegrityCard">
       <div className="reliabilitySectionHeading"><div><span className="eyebrow">Связи и инварианты</span><h2>Целостность данных</h2></div><span className={`healthBadge ${integrity?.critical_count ? "bad" : integrity?.warning_count ? "warn" : "ok"}`}>{integrity?.critical_count ? "Есть критические нарушения" : integrity?.warning_count ? "Есть предупреждения" : "Норма"}</span></div>
       <div className="reliabilityIntegrityGrid">
         <div><span>Source без Processed</span><strong>{reliabilityNumber(integrity?.source_without_processed)}</strong></div>
@@ -582,6 +607,31 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
         <div><span>Архив без времени архивации</span><strong>{reliabilityNumber(integrity?.archived_processed_without_timestamp)}</strong></div>
         <div><span>Некорректный порядок дат</span><strong>{reliabilityNumber((integrity?.first_seen_after_last_seen || 0) + (integrity?.application_start_after_deadline || 0) + (integrity?.archived_before_first_seen || 0))}</strong></div>
         <div><span>Расхождения карты</span><strong>{reliabilityNumber((integrity?.map_missing_from_dataset || 0) + (integrity?.map_extra_in_dataset || 0) + (integrity?.map_tile_count_mismatch || 0) + (integrity?.map_point_count_mismatch || 0))}</strong></div>
+      </div>
+    </section>}
+
+    {summary && <section id="reliability-journal" className="pageCard reliabilityJournalCard">
+      <div className="reliabilitySectionHeading">
+        <div><span className="eyebrow">Последние события</span><h2>Журнал</h2></div>
+        <small>{reliabilityNumber(filteredJournal.length)} событий</small>
+      </div>
+      <div className="reliabilityFilterTabs reliabilityJournalFilters" role="group" aria-label="Фильтр журнала">
+        {([
+          ["all", "Все"],
+          ["errors", "Ошибки"],
+          ["sources", "Источники"],
+          ["geo", "GEO"],
+          ["map", "Карта"],
+          ["infrastructure", "Инфраструктура"],
+        ] as const).map(([id, title]) => <button key={id} className={journalFilter === id ? "active" : ""} onClick={() => setJournalFilter(id)}>{title}</button>)}
+      </div>
+      <div className="reliabilityJournalList">
+        {filteredJournal.slice(0, 50).map((item) => <article key={item.id} data-severity={item.severity}>
+          <span className={`reliabilityJournalDot reliabilityJournalDot--${["error", "critical"].includes(item.severity.toLocaleLowerCase("ru-RU")) ? "bad" : item.severity.toLocaleLowerCase("ru-RU") === "warning" ? "warn" : "neutral"}`} />
+          <div><strong>{item.title}</strong><span>{item.detail}</span></div>
+          <time>{item.at ? new Date(item.at).toLocaleString("ru-RU") : "—"}</time>
+        </article>)}
+        {!filteredJournal.length && <div className="reliabilityEmpty"><Activity /><span>Событий по выбранному фильтру нет.</span></div>}
       </div>
     </section>}
 
