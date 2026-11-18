@@ -136,6 +136,10 @@ def _repair_exact_lots(
         metadata = ("region_slug", "region_name", "detail_level") if audit_scope == "report" or "cadastral_number" in observed else ("detail_level",)
         observed.update(name for name in metadata if getattr(lot, name) is not None)
         observed &= set(SOURCE_FIELDS)
+        fresh_cadastres = lot.raw_data.get("cadastral_numbers") if "cadastral_number" in observed else None
+        if fresh_cadastres and (not isinstance(fresh_cadastres, list)
+                                or any(not isinstance(value, str) for value in fresh_cadastres)):
+            raise ValueError("Observed cadastral array must contain source strings")
         changes = {}
         for name in SOURCE_FIELDS:
             if name not in observed:
@@ -144,6 +148,8 @@ def _repair_exact_lots(
             value = getattr(lot, name)
             if _plain(current) != _plain(value):
                 changes[name] = {"before": _plain(current), "after": _plain(value)}
+        if fresh_cadastres and set(fresh_cadastres) != set(record.cadastral_numbers or []):
+            changes["cadastral_numbers"] = {"before": record.cadastral_numbers, "after": fresh_cadastres}
         if lot.auction_status == "closed" and not record.is_archived:
             changes["is_archived"] = {"before": False, "after": True}
         protected = record.review_status is not None and not allow_reviewed_source_fields
@@ -165,6 +171,10 @@ def _repair_exact_lots(
         for name in SOURCE_FIELDS:
             if name not in observed:
                 setattr(lot, name, getattr(record, name) if name in PROCESSED_FIELDS else getattr(source, name, None))
+        if "cadastral_number" not in observed:
+            # A partial price/date proof cannot replace even the raw identity
+            # array with unobserved metadata from its normalization fallback.
+            lot.raw_data = {key: value for key, value in lot.raw_data.items() if key != "cadastral_numbers"}
         if source is not None:
             # Partial public evidence must not clear procedure, party or contact
             # fields that are outside this repair's explicit field scope.
@@ -196,8 +206,8 @@ def _repair_exact_lots(
             else:
                 value = getattr(lot, name)
                 setattr(record, name, Decimal(str(value)) if name in MONEY_FIELDS and value is not None else value)
-        if lot.raw_data.get("cadastral_numbers"):
-            record.cadastral_numbers = list(lot.raw_data["cadastral_numbers"])
+        if fresh_cadastres:
+            record.cadastral_numbers = list(fresh_cadastres)
         if source is not None and source.processed_lot_id is None:
             source.processed_lot_id = lot_id
         source = _sync_source_lot(session, record, lot, canonical_hint=canonical, isolate_source=True)
@@ -234,7 +244,7 @@ def _repair_exact_lots(
             source.is_active = False
             source.archive_reason = f"exact_{audit_scope}_non_property_sale"
             source.archived_at = source.archived_at or utc_now()
-        if entry["exclude_from_property_map"] or any(name in changes for name in ("address", "cadastral_number", "title", "description")) or lot_id in (recheck_geo_ids or set()):
+        if entry["exclude_from_property_map"] or any(name in changes for name in ("address", "cadastral_number", "cadastral_numbers", "title", "description")) or lot_id in (recheck_geo_ids or set()):
             record.current_geo_lat = record.current_geo_lon = None
             record.current_geo_source = record.current_geo_confidence = None
             record.current_geo_observed_at = record.geo_input_hash = None

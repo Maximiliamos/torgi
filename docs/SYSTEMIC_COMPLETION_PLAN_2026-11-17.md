@@ -333,3 +333,10 @@
     proof эти данные не подставляются в подтверждённые preview/date поля.
     Raw history сохраняется. Две регрессии legacy/current identity пройдены;
     полный v7 source refresh и production-проверка остаются впереди.
+48. Verified repair должен invalidation GEO при изменении вторичных
+    кадастров, даже если primary кадастр тот же. Подготовлены preview delta,
+    проверка scope и invalidation; price/date-only proof не перезаписывает
+    ни P cadastral array, ни source raw identity array. Две регрессии пройдены.
+    После всей кампании требуется повторный полный audit Snapshot vs current
+    source arrays: ранее допустимый вторичный объект мог исчезнуть из свежего
+    состава лота; исходный фиксированный список из 585 не ограничивает аудит.

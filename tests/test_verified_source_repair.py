@@ -154,6 +154,35 @@ def test_geo_recheck_cannot_use_unobserved_cadastral_identity(context):
     assert not session.dirty
 
 
+@pytest.mark.parametrize("observed_cadastre", [True, False])
+def test_secondary_cadastres_require_source_scope_and_invalidate_stale_geo(context, observed_cadastre):
+    session, record, source, evidence = context
+    primary = record.cadastral_number
+    record.cadastral_numbers = [primary, "76:23:0000001:111"]
+    source.raw_data = {"cadastral_numbers": [primary, "76:23:0000001:111"]}
+    record.current_geo_lat, record.current_geo_lon = 55, 37
+    record.current_geo_source = "nspd"
+    record.needs_geo_check = False
+    session.commit()
+    item = evidence[0]
+    observed = ["cadastral_number"] if observed_cadastre else ["start_price"]
+    item["normalized"]["raw_data"].update(repair_observed_fields=observed,
+                                         cadastral_numbers=[primary, "76:23:0000001:222"])
+    item["verification"]["observed_fields"] = observed
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert ("cadastral_numbers" in preview["items"][0]["changes"]) == observed_cadastre
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    session.flush()
+    expected = [primary, "76:23:0000001:222" if observed_cadastre else "76:23:0000001:111"]
+    assert record.cadastral_numbers == source.raw_data["cadastral_numbers"] == expected
+    assert record.current_geo_lat == (None if observed_cadastre else 55)
+    assert record.current_geo_lon == (None if observed_cadastre else 37)
+    assert record.needs_geo_check == observed_cadastre
+    assert record.review_status == "approved"
+
+
 @pytest.mark.parametrize("apply", [False, True])
 def test_fresh_proof_cannot_restore_a_user_excluded_identity(context, apply):
     from bankrotai.services.source_lot_exclusions import SourceLotExcludedError, register_exclusion

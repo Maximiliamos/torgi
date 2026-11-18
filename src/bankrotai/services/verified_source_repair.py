@@ -30,7 +30,7 @@ def repair_verified_source_lots(
     previous_verifications = {}
     run_observations = {}
     recheck_geo_ids = set()
-    source_identities = {}
+    source_identities: dict[str, set[str]] = {}
     for item in evidence:
         proof = item.get("verification", {})
         lot = item.get("normalized", {})
