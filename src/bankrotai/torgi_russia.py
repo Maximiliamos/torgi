@@ -46,7 +46,7 @@ PUBLIC_OTHER_REGION_TITLE = "Иные территории, включая го�
 CADASTRAL_RE = re.compile(r"\b\d{2}\s*:\s*\d{2}\s*:\s*\d{5,7}\s*:\s*\d+\b")
 LOT_OBJECT_START_RE = re.compile(r'\{"id":\d+,"title":')
 TORGI_RUSSIA_RETRY_DELAYS_SECONDS = (1, 2, 4, 8)
-TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
+TORGI_RUSSIA_RETRY_STATUS_CODES = frozenset({502, 503, 504})
 def normalize_cadastral_number(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
 
@@ -66,6 +66,8 @@ class TorgiRussiaDetails:
     application_start_at: datetime | None = None
     application_deadline: datetime | None = None
     auction_at: datetime | None = None
+    detail_identity_verified: bool = False
+    detail_external_id: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -81,6 +83,8 @@ class TorgiRussiaDetails:
             "application_start_at": self.application_start_at.isoformat() if self.application_start_at else None,
             "application_deadline": self.application_deadline.isoformat() if self.application_deadline else None,
             "auction_at": self.auction_at.isoformat() if self.auction_at else None,
+            "detail_identity_verified": self.detail_identity_verified,
+            "detail_external_id": self.detail_external_id,
         }
 
 
@@ -406,7 +410,11 @@ class TorgiRussiaClient:
         numeric_id = external_id.rsplit(":", 1)[-1]
         lot_url = urljoin(BASE_URL, f"/lot/{numeric_id}")
         response = self._get_with_retry(lot_url)
-        return response.text, response.url or lot_url
+        final_url = response.url or lot_url
+        if (urlparse(final_url).path.rstrip("/") != f"/lot/{numeric_id}"
+                or str(urlparse(final_url).hostname).encode("idna").decode() != urlparse(BASE_URL).hostname):
+            raise RuntimeError("Torgi Russia detail redirect changed source identity")
+        return response.text, final_url
 
     @staticmethod
     def _extract_next_flight_text(html: str) -> str:
@@ -575,9 +583,9 @@ class TorgiRussiaClient:
         raw_pictures = data.get("pictures")
         pictures: list = raw_pictures if isinstance(raw_pictures, list) else []
         image_urls = [
-            str(item.get("link") or item.get("thumb_link"))
+            str(item.get("link") or item.get("url") or item.get("thumb_link"))
             for item in pictures
-            if isinstance(item, dict) and (item.get("link") or item.get("thumb_link"))
+            if isinstance(item, dict) and (item.get("link") or item.get("url") or item.get("thumb_link"))
         ]
         return {
             "description": description,
@@ -830,6 +838,10 @@ class TorgiRussiaClient:
 
     @classmethod
     def parse_lot_page(cls, html: str, page_url: str) -> TorgiRussiaDetails:
+        from bankrotai.torgi_russia_scoped_detail import parse_structured_lot_page
+        structured = parse_structured_lot_page(html, page_url, cls)
+        if structured is not None:
+            return structured
         soup = BeautifulSoup(html, "html.parser")
         labels: dict[str, str] = {}
         for term in soup.select("dt"):

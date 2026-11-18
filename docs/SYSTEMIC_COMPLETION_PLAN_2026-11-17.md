@@ -234,3 +234,17 @@
     блокировка перед bounded stale NSPD replay. 57 целевых тестов прошли,
     включая 8 source-change регрессий и проверку SHA/identity/freshness
     NSPD receipts. Код и оператор применения ещё не развёрнуты.
+32. Воспроизведён ещё один источник подмены Torgi Russia: глобальный DOM
+    подставлял кадастр и ссылку рекомендованного лота, а Next.js без
+    requested record не отклонялся. Подготовлен scoped exact-ID parser v7,
+    ссылки/cadastrals/фото/даты из одной записи, redirect/identity guards.
+    Реальный canary 7288058 пройден; HTTP 401/403/429 больше не ретраятся.
+    M-ETS metadata дополнена exact IDs/reasons отклонений, оператор двух
+    production-проходов сохраняет покарточный журнал accepted/reused/rejected.
+33. Roseltorg и UTPL заново ответили HTTP 200 с Windows и Linux; старые
+    ConnectionError не названы постоянной неисправностью. TLS Профит
+    исправляется добавлением отсутствующего GlobalSign intermediate,
+    проверенного существующим Debian root bundle; verified live canary
+    HTTP 200 без выключения TLS. Fingerprint закреплён тестом.
+    109 целевых тестов source/GEO/certificates/architecture прошли; последняя
+    очередь ещё ожидает CI, merge и deployment после текущего source run.

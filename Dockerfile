@@ -12,6 +12,7 @@ RUN addgroup --system bankrotai && adduser --system --ingroup bankrotai --home /
 
 COPY pyproject.toml README.md requirements.lock ./
 COPY certs/russian_trusted_root_ca.crt certs/russian_trusted_sub_ca.crt certs/russian_trusted_sub_ca_2024.crt /usr/local/share/ca-certificates/
+COPY certs/globalsign_gcc_r6_alphassl_ca_2025.crt /usr/local/share/ca-certificates/
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \

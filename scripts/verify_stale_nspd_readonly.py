@@ -43,6 +43,7 @@ def main():
         session.rollback()
     print(json.dumps({"event": "cohort", "distinct_cadastres": len(targets),
                       "lot_count": sum(len(t["lot_ids"]) for t in targets),
+                      "targets": targets,
                       "database_writes": 0, "complete_source_inventory": False}), flush=True)
     client = requests.Session()
     previous = 0.0
@@ -62,6 +63,7 @@ def main():
                 timeout=(5, 20), verify=nspd_tls_verify(),
             )
             receipt.update(http_status=response.status_code,
+                           source_url=response.url,
                            response_sha256=hashlib.sha256(response.content).hexdigest(),
                            response_base64=base64.b64encode(response.content).decode())
             if response.status_code == 404:

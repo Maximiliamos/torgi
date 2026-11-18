@@ -12,8 +12,8 @@ from bankrotai.torgi_russia import PUBLIC_REGION_FILTER_IDS, TorgiRussiaClient
 
 class TorgiRussiaConnector(AuctionConnector):
     source_id = "torgi-russia.ru"
-    detail_enrichment_version = 6
-    compatible_detail_enrichment_versions = frozenset({6})
+    detail_enrichment_version = 7
+    compatible_detail_enrichment_versions = frozenset({7})
     # Listing-page price/status/photo changes do not invalidate stable detail
     # fields such as address/cadastral/procedure data. This also prevents the
     # new Next.js transport shape from forcing a mass detail refetch.
@@ -96,6 +96,8 @@ class TorgiRussiaConnector(AuctionConnector):
     async def enrich_lot(self, lot):
         html, page_url = await asyncio.to_thread(self.client.fetch_lot_page, lot.external_id)
         detail = self.client.parse_lot_page(html, page_url)
+        if not detail.detail_identity_verified or detail.detail_external_id != lot.external_id:
+            raise RuntimeError("Torgi Russia detail identity is unverified")
         raw = dict(lot.raw_data or {})
         raw.update(detail.as_dict())
         raw["detail_enrichment_status"] = "success"

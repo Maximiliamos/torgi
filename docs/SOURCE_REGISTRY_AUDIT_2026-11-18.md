@@ -46,4 +46,12 @@
 
 ## Артефакты
 
+Дополнение 18 ноября 07:15 UTC: повторные прямые запросы Roseltorg и UTPL
+вернули HTTP 200 как на Windows, так и в production Linux. Прежний
+ConnectionError не является постоянным доказательством поломки парсера.
+Профит отвечает на Windows, но в Docker не хватает intermediate GlobalSign.
+Issuer chain проверена существующим root bundle; добавление intermediate
+в SSL context даёт HTTP 200 с проверкой hostname. Патч Docker trust bundle
+подготовлен в #1255. Эти транспортные проверки не доказывают весь каталог.
+
 Приватные файлы: `.artifacts/finish/all-etp-stage-audit.log`, `core-five-deployed-audit.log`, `etp-dcd-manual-qa/etp-manual-qa-all.json`. В матрицу не включены cookies, credentials или исходные персональные данные.

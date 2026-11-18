@@ -368,6 +368,7 @@ class MetsSourceCrawler:
 
         accepted = []
         rejected: dict[str, int] = {}
+        rejection_samples = []
         reused = [item for item in novel_observations if self._can_reuse_detail(item)]
         reused_ids = [item[0] for item in reused]
         detail_candidates = [item for item in novel_observations if item[0] not in set(reused_ids)]
@@ -457,9 +458,12 @@ class MetsSourceCrawler:
         # map preserves catalogue ordering and propagates any fatal failure.
         # Only details overlap; the next catalogue page is never fetched early.
         with workers.pool() as executor:
-            for lot, code in workers.map_ordered(executor, verify, detail_candidates):
+            for observation, (lot, code) in zip(
+                detail_candidates, workers.map_ordered(executor, verify, detail_candidates), strict=True,
+            ):
                 if code:
                     rejected[code] = rejected.get(code, 0) + 1
+                    rejection_samples.append({"external_id": observation[0], "reason": code})
                 elif lot is not None:
                     accepted.append(lot)
 
@@ -510,6 +514,7 @@ class MetsSourceCrawler:
                 },
                 "detail_concurrency": filters.detail_concurrency,
                 "rejection_codes": rejected,
+                "detail_rejection_samples": rejection_samples[:20],
                 "requested_category_group": "mets_property_nonreconciling",
                 "complete_selected_filter_inventory": next_cursor is None,
                 "complete_source_inventory": False,
