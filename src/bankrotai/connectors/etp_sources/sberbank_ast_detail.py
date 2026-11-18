@@ -51,8 +51,9 @@ def parse_goods_card(payload: Any, *, external_id: str) -> NormalizedLot:
                 _record(purchase.get('TradeSection'))]
     if any(str(s.get('Id')) != BANKRUPTCY_SECTION_ID for s in sections):
         raise SberbankAstContractError('GoodsCard does not prove bankruptcy scope')
+    source_purchase_id = _record(origin.get('Purchase')).get('Id')
     if (not purchase.get('Id') or not bid.get('Id')
-            or str(_record(origin.get('Purchase')).get('Id')) != str(purchase.get('Id'))):
+            or (source_purchase_id not in (None, '') and str(source_purchase_id) != str(purchase.get('Id')))):
         raise SberbankAstContractError('GoodsCard purchase binding differs')
     title = normalize_text(goods.get('Name'))
     description = normalize_text(goods.get('Description'))

@@ -14,7 +14,9 @@ to the exact GoodsView path. No login/action/submission endpoint is used.
 The response has GoodsCard.ContractVersion=2. Accept only the own Goods.Type.Id
 and Goods.Id matching the requested type/0/0/id tuple. All own Goods.Source,
 Bid and Purchase sections must be bankruptcy section 13, and the source's
-Purchase.Id must match the own Purchase.Id. Other middle path components and
+Purchase.Id, when present, must match the own Purchase.Id. V2 also has valid
+cards without that redundant reference; own Bid.Id and Purchase.Id remain
+mandatory and their relation is scoped to the exact root GoodsCard. Other middle path components and
 schema versions fail closed. Recommendations and RelatedBids cannot supply
 the selected lot's title, cadastral number, status or price.
 

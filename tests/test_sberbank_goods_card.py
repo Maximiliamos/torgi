@@ -86,3 +86,10 @@ def test_explicit_lease_cannot_pass_sale_filter():
     from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
     payload=card();payload['GoodsCard']['Goods']['OperationType']='Аренда'
     assert not is_sale_real_estate_lot(parse_goods_card(payload,external_id=ID))
+
+
+def test_optional_redundant_source_purchase_id_can_be_absent_in_v2():
+    payload=card();del payload['GoodsCard']['Goods']['Source']['Purchase']['Id']
+    lot=parse_goods_card(payload,external_id=ID)
+    assert lot.procedure_number=='SBR013-2611180007-0'
+    assert lot.raw_data['source_bid_id']=='3470226'
