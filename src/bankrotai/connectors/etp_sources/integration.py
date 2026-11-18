@@ -768,30 +768,26 @@ class SberbankAstConnector(HtmlEtpConnector):
         )
 
     async def fetch_lot(self, external_id: str) -> NormalizedLot:
-        from bankrotai.connectors.etp_sources.sberbank_ast_contract import (
-            SberbankAstContractError,
-            detail_url_from_external_id,
-            parse_detail,
+        from bankrotai.connectors.etp_sources.sberbank_ast_detail import (
+            build_goods_card_request, parse_goods_card,
         )
+        from bankrotai.connectors.etp_sources.sberbank_ast_contract import SberbankAstContractError
 
         try:
-            detail_url = detail_url_from_external_id(external_id)
+            api_url, payload = build_goods_card_request(external_id)
         except SberbankAstContractError as exc:
             raise SourceSchemaError(str(exc)) from exc
         response = await asyncio.to_thread(
             self._read_request,
-            "get",
-            _trusted(self.profile, detail_url),
+            "post",
+            _trusted(self.profile, api_url),
+            json=payload,
             timeout=self.timeout,
             allow_redirects=False,
         )
         try:
-            return parse_detail(
-                response.content,
-                detail_url=detail_url,
-                external_id=external_id,
-            )
-        except SberbankAstContractError as exc:
+            return parse_goods_card(response.json(), external_id=external_id)
+        except (SberbankAstContractError, ValueError) as exc:
             raise SourceSchemaError(str(exc)) from exc
 
     async def enrich_lot(self, lot: NormalizedLot) -> NormalizedLot:

@@ -250,14 +250,20 @@ async def diagnose_source(
             stages["transport"] = _entry(PASS, reason="connector_search_returned")
             stages["catalogue_markup"] = _entry(PASS, reason="connector_parsed_catalogue")
             items = tuple(page.items)
-            if not items:
+            metadata = page.metadata if isinstance(page.metadata, dict) else {}
+            filtered_sberbank_page = bool(source == 'sberbank-ast.ru' and page.next_cursor
+                and metadata.get('api_total_is_source_end') is True
+                and type(metadata.get('terminal_page')) is int
+                and metadata['terminal_page'] > page_number)
+            if not items and not filtered_sberbank_page:
                 stages["lot_discovery"] = _entry(FAIL, reason="empty_page", page=page_number)
                 report["first_failure"] = report["first_failure"] or {
                     "stage": "lot_discovery", "page": page_number,
                     "category": "empty_page",
                 }
                 break
-            stages["lot_discovery"] = _entry(PASS, count=report["sample_lots"] + len(items))
+            stages["lot_discovery"] = (_entry(PASS, count=report["sample_lots"] + len(items)) if items
+                else _entry(NOT_TESTED, reason='verified_source_page_has_no_matching_property'))
             for lot in items:
                 ident = str(getattr(lot, "external_id", "") or "")
                 if (not ident or ident in seen or
@@ -272,9 +278,10 @@ async def diagnose_source(
                     }
                     return report
                 seen.add(ident)
-            stages["stable_lot_ids"] = _entry(
-                PASS, reason="syntactically_unique_sample_ids", count=len(seen)
-            )
+            if seen:
+                stages["stable_lot_ids"] = _entry(
+                    PASS, reason="syntactically_unique_sample_ids", count=len(seen)
+                )
             sample.extend(items[:detail_probes])
             report["sample_lots"] += len(items)
             metadata = page.metadata if isinstance(page.metadata, dict) else {}

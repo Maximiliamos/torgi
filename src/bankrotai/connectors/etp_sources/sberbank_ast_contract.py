@@ -422,6 +422,8 @@ def parse_detail(
 ) -> NormalizedLot:
     verify_identity(external_id=external_id, detail_url=detail_url)
     soup = BeautifulSoup(html, "html.parser")
+    if soup.select_one('a-form') and 'GoodsViewCatalog' in str(soup):
+        raise SberbankAstContractError('GoodsView shell does not prove an individual property card')
     text = normalize_text(soup.get_text(" ", strip=True))
     if len(text) < 250 or not _PROPERTY_EVIDENCE_RE.search(text):
         raise SberbankAstContractError("GoodsView page does not prove an individual property card")
