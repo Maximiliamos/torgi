@@ -1,11 +1,31 @@
 from datetime import datetime
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import requests
+import pytest
+from bs4 import BeautifulSoup
 
 from bankrotai.scraper_contracts import LotOnlineSearchFilters
 from bankrotai.domain import NormalizedLot
 from bankrotai.scrapers import LotOnlineClient, is_sale_real_estate_lot
+
+
+def identified_detail_fixture(response):
+    """Put reduced field fixtures inside the real exact-product envelope."""
+    document = BeautifulSoup(response.content, "lxml")
+    title = document.title.get_text() if document.title else ""
+    parts = urlsplit(response.url)
+    native = parse_qs(parts.query).get("product_id", [parts.path.rsplit("/", 1)[-1]])[0]
+    body = document.body or document
+    form = document.new_tag("form", attrs={"name": f"product_form_{native}"})
+    heading = document.new_tag("h1", attrs={"class": "ty-product-block-title"})
+    heading.string = title
+    form.append(heading)
+    form.append(document.new_tag("input", attrs={"name": f"product_data[{native}][product_id]", "value": native}))
+    for node in list(body.contents):
+        form.append(node.extract())
+    response.content = str(form).encode("utf-8")
 
 
 LISTING_HTML = """
@@ -176,6 +196,7 @@ def test_fetch_detail_fields_reads_structured_address_and_cadastre() -> None:
         def get(*_args, **_kwargs):
             return Response()
 
+    identified_detail_fixture(Response)
     fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
 
     assert fields["address"] == "Рязанская область, г. Сасово, ул. Ленина, д. 7"
@@ -210,6 +231,7 @@ def test_fetch_detail_fields_reads_current_listing_date_rows() -> None:
         def get(*_args, **_kwargs):
             return Response()
 
+    identified_detail_fixture(Response)
     fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
 
     assert fields["application_start_at"] == datetime(2026, 8, 20, 17, 0)
@@ -241,6 +263,7 @@ def test_property_description_address_wins_over_unrelated_labelled_address() -> 
         def get(*_args, **_kwargs):
             return Response()
 
+    identified_detail_fixture(Response)
     fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
 
     assert "Ногинск" in fields["address"]
@@ -272,6 +295,7 @@ def test_lot_online_detail_trims_asset_composition_after_building_address() -> N
         def get(*_args, **_kwargs):
             return Response()
 
+    identified_detail_fixture(Response)
     fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
 
     assert fields["address"] == (
@@ -307,9 +331,49 @@ def test_lot_online_real_property_title_overrides_unrelated_seller_address() -> 
         def get(*_args, **_kwargs):
             return Response()
 
+    identified_detail_fixture(Response)
     fields = LotOnlineClient(session=Session()).fetch_detail_fields(Response.url)
 
     assert "Ленинградский" in fields["address"]
     assert "52" in fields["address"]
     assert "САДОВНИЧЕСКАЯ" not in fields["address"].upper()
     assert fields["cadastral_numbers"] == ["77:09:0004009:5974"]
+
+
+@pytest.mark.parametrize("own_dates", [True, False])
+def test_detail_never_copies_recommendation_dates_or_assets(own_dates):
+    own_timeline = """<dl><div class="row-request-date"><dt>Период приема заявок</dt>
+      <dd>20.08.2026 09:00 - 25.08.2026 18:00</dd></div></dl>""" if own_dates else ""
+    html = f"""<html><body>
+      <form name="product_form_111">
+        <h1 class="ty-product-block-title">Земельный участок</h1>
+        <input name="product_data[111][product_id]" value="111">
+        <div class="ty-product__full-description">Участок 76:23:010101:42</div>
+        {own_timeline}
+      </form>
+      <form name="product_form_222">
+        <input name="product_data[222][product_id]" value="222">
+        <div class="ty-product__full-description">Чужой объект 77:01:0000001:999</div>
+        <dl><div class="row-request-date"><dt>Период приема заявок</dt>
+          <dd>01.12.2026 18:00 - 31.12.2026 18:00</dd></div></dl>
+      </form></body></html>""".encode()
+    fields = LotOnlineClient().parse_detail_fields(html, "https://catalog.lot-online.ru/lot/111")
+    assert fields["detail_external_id"] == "lot-online:111"
+    assert fields["detail_identity_verified"]
+    assert fields["cadastral_numbers"] == ["76:23:010101:42"]
+    assert fields["application_start_at"] == (datetime(2026, 8, 20, 9) if own_dates else None)
+    assert fields["application_deadline"] == (datetime(2026, 8, 25, 18) if own_dates else None)
+
+
+@pytest.mark.parametrize("mode", ["wrong_main", "missing_main", "redirect"])
+def test_detail_rejects_other_main_product_even_if_requested_id_is_recommended(mode):
+    native = "222" if mode == "wrong_main" else "111"
+    heading = '<h1 class="ty-product-block-title">Участок</h1>' if mode != "missing_main" else ""
+    html = f"""<form name="product_form_{native}">{heading}
+        <input name="product_data[{native}][product_id]" value="{native}"></form>
+        <form name="product_form_111"><input name="product_data[111][product_id]" value="111"></form>""".encode()
+    final = "https://catalog.lot-online.ru/lot/222" if mode == "redirect" else "https://catalog.lot-online.ru/lot/111"
+    from bankrotai.connectors.lot_online import LotOnlineClientError
+    with pytest.raises(LotOnlineClientError, match="identity mismatch|main product form"):
+        LotOnlineClient().parse_detail_fields(html, final, expected_external_id="lot-online:111",
+                                              requested_url="https://catalog.lot-online.ru/lot/111")

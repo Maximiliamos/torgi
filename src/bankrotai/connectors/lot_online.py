@@ -13,7 +13,7 @@ import time
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Callable
-from urllib.parse import urlencode, urljoin
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -151,14 +151,45 @@ class LotOnlineClient:
         )[0].strip(" ,.;")
         return cleaned or None
 
-    def fetch_detail_fields(self, url: str) -> dict[str, Any]:
+    def fetch_detail_fields(self, url: str, *, expected_external_id: str | None = None) -> dict[str, Any]:
         """Fetch structured address/cadastre fields absent from listing cards."""
         try:
             response = self._get_with_retry(url)
         except requests.RequestException as exc:
             raise LotOnlineClientError(f"Не удалось загрузить карточку ЛОТ-ОНЛАЙН: {exc}") from exc
+        return self.parse_detail_fields(response.content, response.url or url,
+                                        expected_external_id=expected_external_id, requested_url=url)
 
-        soup = BeautifulSoup(response.content, "lxml")
+    def parse_detail_fields(self, content: bytes, page_url: str, *,
+                            expected_external_id: str | None = None,
+                            requested_url: str | None = None) -> dict[str, Any]:
+        requested = urlsplit(requested_url or page_url)
+        final = urlsplit(page_url)
+        if final.scheme != "https" or final.hostname != "catalog.lot-online.ru" or final.username or final.password:
+            raise LotOnlineClientError("ЛОТ-ОНЛАЙН: detail URL is outside the exact source")
+        expected = str(expected_external_id or "").removeprefix("lot-online:")
+        requested_id = parse_qs(requested.query).get("product_id", [None])[0]
+        if requested_id is None:
+            match = re.fullmatch(r"/lot/(\d+)/?", requested.path)
+            requested_id = match.group(1) if match else None
+        expected = expected or str(requested_id or "")
+        final_id = parse_qs(final.query).get("product_id", [None])[0]
+        if final_id is None:
+            match = re.fullmatch(r"/lot/(\d+)/?", final.path)
+            final_id = match.group(1) if match else None
+        if (not re.fullmatch(r"\d{1,20}", expected)
+                or requested_id is not None and requested_id != expected
+                or final_id is not None and final_id != expected):
+            raise LotOnlineClientError("ЛОТ-ОНЛАЙН: requested detail identity mismatch")
+        document = BeautifulSoup(content, "lxml")
+        forms = [form for form in document.select("form") if form.select_one("h1.ty-product-block-title") is not None]
+        if len(forms) != 1:
+            raise LotOnlineClientError("ЛОТ-ОНЛАЙН: exact main product form is missing or ambiguous")
+        soup = forms[0]
+        product = soup.select_one(f'input[name="product_data[{expected}][product_id]"]')
+        if soup.get("name") != f"product_form_{expected}" or product is None or product.get("value") != expected:
+            raise LotOnlineClientError("ЛОТ-ОНЛАЙН: main product identity mismatch")
+        title_node = soup.select_one("h1.ty-product-block-title")
         labelled: dict[str, str] = {}
         for container in soup.select("dl > div"):
             label_node = container.find("dt")
@@ -206,13 +237,13 @@ class LotOnlineClient:
             for node in soup.select(".ty-product__full-description")
         ]
         description = max((value for value in descriptions if value), key=len, default="")
-        page_text = " ".join((description, self._detail_text(soup.title)))
+        page_text = " ".join((description, self._detail_text(title_node)))
         # A generic detail-page "Адрес" may belong to the seller or
         # auction venue. The full lot description identifies the property.
         # A generic "Адрес" label may describe a seller or organizer.
         # Prefer the lot's own description and product title, both scoped to
         # the exact opened asset, before any generic labelled fallback.
-        title_text = self._detail_text(soup.title)
+        title_text = self._detail_text(title_node)
         address = self._compact_property_address(
             extract_address(description)
             or extract_address(title_text)
@@ -232,7 +263,9 @@ class LotOnlineClient:
             "application_start_at": parse_datetime(labelled_value("начал", "период приема заявок", "период приёма заявок")),
             "application_deadline": parse_last_datetime(labelled_value("окончан", "период приема заявок", "период приёма заявок")),
             "auction_at": parse_last_datetime(labelled_value("дата торгов", "дата аукцион", "аукцион", "проведен")),
-            "url": response.url or url,
+            "url": page_url,
+            "detail_identity_verified": True,
+            "detail_external_id": f"lot-online:{expected}",
         }
 
     def search_lots(self, filters: LotOnlineSearchFilters) -> tuple[list[NormalizedLot], dict[str, Any]]:
