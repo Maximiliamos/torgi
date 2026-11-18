@@ -99,7 +99,7 @@ def _map_lot_payload(
         russia_url = russia_url or raw.get("torgi_russia_url")
 
     auction_at = source_auction_date(primary, "auction_at")
-    price_observed_at = primary.last_seen_at if primary and primary.last_seen_at else lot.last_update
+    price_observed_at = primary.last_seen_at if primary else None
     primary_raw = primary.raw_data if primary and isinstance(primary.raw_data, dict) else {}
     minimum_price = primary_raw.get("minimum_price")
     publications = [

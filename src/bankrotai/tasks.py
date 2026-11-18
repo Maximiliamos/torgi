@@ -694,7 +694,7 @@ def _is_transient_sync_error(exc: Exception) -> bool:
 
 def _sync_changed_map_membership(result: dict[str, Any]) -> bool:
     """Return whether an ingestion result can have changed public map content."""
-    if int(result.get("expired_after_auction") or 0) > 0:
+    if int(result.get("expired_after_auction") or 0) > 0 or int(result.get("duplicate_links_detached") or 0) > 0:
         return True
     changed_fields = ("items_inserted", "items_updated", "items_archived", "duplicates_merged")
     return any(

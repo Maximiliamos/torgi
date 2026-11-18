@@ -64,11 +64,14 @@ def test_changed_parent_invalidates_duplicate_repair_preview(context):
 
 
 def test_normal_reconciliation_cannot_keep_a_legacy_different_sale_link(context):
+    from bankrotai.tasks import _sync_changed_map_membership
     session, parent, child, note = context
     assert reconcile_cross_source_duplicates(session) == 0
     assert session.info["duplicate_links_detached"] == 1
+    assert _sync_changed_map_membership({"sources": [], "duplicate_links_detached": 1})
     assert child.duplicate_of_id is None
     assert child.review_status == "approved" and parent.review_status == "rejected"
     assert note.lot_id == child.id
     assert reconcile_cross_source_duplicates(session) == 0
     assert session.info["duplicate_links_detached"] == 0
+    assert not _sync_changed_map_membership({"sources": [], "duplicate_links_detached": 0})

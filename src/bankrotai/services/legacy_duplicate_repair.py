@@ -9,7 +9,7 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
 
-from bankrotai.db import ProcessedLot, utc_now
+from bankrotai.db import ProcessedLot
 from bankrotai.logic import log_action, _processed_lot_cadastral_numbers, _same_processed_cross_source_lot, _ensure_processed_source_lot
 from bankrotai.services.duplicate_projection_policy import valid_duplicate_target
 from bankrotai.services.reported_lot_repair import _state
@@ -22,7 +22,6 @@ def _detach(session, record, *, actor):
     if (not record.is_archived and record.auction_status in {"active", "scheduled"}
             and (record.current_geo_lat is None or record.current_geo_lon is None)):
         record.needs_geo_check = True
-    record.last_update = utc_now()
     log_action(session, actor, "legacy_duplicate_policy_repair", "lot", str(record.id),
                {"previous_parent_id": previous, "new_parent_id": None,
                 "reason": "same_sale_identity_not_proven", "source_fact_changes": 0})

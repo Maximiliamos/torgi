@@ -358,3 +358,11 @@
     source repair, связанные parent/child не попадают в один mutation cohort.
     Код и структурный ремонт ещё не внедрены/не применены: текущий GIS
     campaign остаётся на прежнем exact deployed SHA до безопасного terminal.
+52. Оператор структурного ремонта подготовлен: exact deployed SHA,
+    проверенный backup, frozen ID selection, preview state/hash, принудительный
+    rollback trial, maintenance lease и digest оценок/notes. Меняются только
+    duplicate link, при необходимости GEO queue flag и технический update
+    timestamp; внешние source facts и CanonicalLot не переписываются.
+    Обычный pipeline учитывает detached links отдельно от merged copies и
+    запускает обновление карты даже без других изменений. Время технического
+    изменения записи без primary SourceLot не выдаётся временем проверки цены.

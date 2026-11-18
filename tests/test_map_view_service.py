@@ -146,6 +146,7 @@ def test_missing_exact_source_does_not_borrow_another_publication_facts():
     detail = _map_lot_payload(lot, geo, [(other, source)])
     assert detail["application_deadline"] is detail["auction_at"] is detail["procedure_number"] is None
     assert detail["minimum_price"] is None
+    assert detail["price_observed_at"] is None
     assert detail["image_urls"] == []
     assert detail["source_url"] == "https://own.ru/1"
     assert len(detail["sources"]) == 1
