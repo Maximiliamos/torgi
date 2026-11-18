@@ -383,6 +383,14 @@ export type ReliabilitySummary = {
     non_positive_price: ReliabilityMetric;
     historical_total: number;
   };
+  journal: Array<{
+    id: number;
+    category: "sources" | "geo" | "map" | "infrastructure" | "system" | string;
+    severity: string;
+    title: string;
+    detail: string;
+    at: string | null;
+  }>;
 };
 
 export type ReliabilitySource = {
