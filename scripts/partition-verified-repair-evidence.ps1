@@ -16,10 +16,11 @@ ids=[i['lot_id'] for i in items]
 if not items or len(ids)!=len(set(ids)):raise ValueError('Evidence must have unique exact lot IDs')
 with SessionLocal() as s:
  s.execute(text('SET TRANSACTION READ ONLY'))
- rows=s.execute(select(ProcessedLot.id,SourceLot.canonical_lot_id,CanonicalLot.id).select_from(ProcessedLot)
+ rows=s.execute(select(ProcessedLot.id,SourceLot.canonical_lot_id,CanonicalLot.id,ProcessedLot.duplicate_of_id).select_from(ProcessedLot)
   .outerjoin(SourceLot,and_(SourceLot.source_system==ProcessedLot.source_system,SourceLot.external_id==ProcessedLot.external_id))
   .outerjoin(CanonicalLot,CanonicalLot.legacy_processed_lot_id==ProcessedLot.id).where(ProcessedLot.id.in_(ids))).all()
- keys={r[0]:{key for key in (r[1],r[2]) if key is not None} or {('unlinked',r[0])} for r in rows}
+ keys={r[0]:{key for key in (r[1],r[2]) if key is not None} | {('processed',r[0])}
+       | ({('processed',r[3])} if r[3] is not None else set()) for r in rows}
  if len(keys)!=len(ids):raise ValueError('Missing exact projection')
  cohorts=[];seen=[]
  for item in sorted(items,key=lambda i:i['lot_id']):

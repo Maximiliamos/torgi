@@ -81,7 +81,7 @@ def repair_verified_source_lots(
             SourceLot.source_system == source, SourceLot.external_id == lot["external_id"],
         ))
         existing_raw = existing.raw_data or {} if existing is not None else {}
-        if existing is not None and source == "torgi.gov.ru":
+        if existing is not None:
             stamp = existing_raw.get("ingestion_observed_at")
             observed_at = datetime.fromisoformat(stamp) if stamp else None
             if observed_at is None and existing.last_sync_run_id:

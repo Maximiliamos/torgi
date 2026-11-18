@@ -5656,6 +5656,7 @@ class MainWindow(QMainWindow):
         from bankrotai.services.source_auction_facts import source_auction_date, trusted_preview_raw, unverified_auction_fields
         from bankrotai.business_time import to_moscow_datetime
         from bankrotai.services.map_geo_projection import current_map_geo
+        from bankrotai.services.map_payload import _is_ended
 
         current_geo = current_map_geo(lot, geo)
         if current_geo is None:
@@ -5699,14 +5700,7 @@ class MainWindow(QMainWindow):
             )
             torgi_russia_url = torgi_russia_url or raw_data.get("torgi_russia_url")
         auction_at = source_auction_date(primary_source, "auction_at")
-        auction_now = datetime.now(ZoneInfo("Europe/Moscow")).replace(tzinfo=None)
-        ended_statuses = {"closed", "completed", "cancelled", "canceled", "failed", "annulled", "archive"}
-        is_ended = bool(
-            lot.is_archived
-            or lot.closed_at
-            or (lot.auction_status or "").casefold() in ended_statuses
-            or (auction_at is not None and auction_at + timedelta(minutes=15) < auction_now)
-        )
+        is_ended = _is_ended({"is_archived": lot.is_archived, "status": lot.auction_status})
         return {
             "id": lot.id,
             "title": lot.title,

@@ -249,6 +249,7 @@ class NationwideIngestionService:
         dedupe_started = time.perf_counter()
         with self.session_factory() as session:
             merged = reconcile_cross_source_duplicates(session)
+            detached = session.info.get("duplicate_links_detached", 0)
             session.commit()
         expired_after_auction = self._expire_elapsed_auctions()
         canonical_dedupe_ms = round((time.perf_counter() - dedupe_started) * 1000, 3)
@@ -260,6 +261,7 @@ class NationwideIngestionService:
             else ("failed" if all(item.status == "failed" for item in results) else "partial")
         )
         payload = {
+            "duplicate_links_detached": detached,
             "status": status,
             "sources": [self._result_payload(item) for item in results],
             "expired_after_auction": expired_after_auction,

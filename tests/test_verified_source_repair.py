@@ -183,6 +183,26 @@ def test_secondary_cadastres_require_source_scope_and_invalidate_stale_geo(conte
     assert record.review_status == "approved"
 
 
+@pytest.mark.parametrize("same_sale", [True, False])
+def test_source_correction_revalidates_legacy_duplicate_identity(context, same_sale):
+    session, record, _, evidence = context
+    shared = "https://test.ru/auction/lot/1"
+    parent = ProcessedLot(source_system="other.ru", external_id="other:1", title="Участок", category="land",
+                          cadastral_number=record.cadastral_number, lot_url=shared, review_status="rejected")
+    session.add(parent)
+    session.flush()
+    record.duplicate_of_id = parent.id
+    record.lot_url = shared if same_sale else "https://test.ru/auction/lot/2"
+    session.commit()
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert ("duplicate_of_id" in preview["items"][0]["changes"]) == (not same_sale)
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    assert record.duplicate_of_id == (parent.id if same_sale else None)
+    assert record.review_status == "approved" and parent.review_status == "rejected"
+
+
 @pytest.mark.parametrize("apply", [False, True])
 def test_fresh_proof_cannot_restore_a_user_excluded_identity(context, apply):
     from bankrotai.services.source_lot_exclusions import SourceLotExcludedError, register_exclusion
@@ -199,13 +219,14 @@ def test_fresh_proof_cannot_restore_a_user_excluded_identity(context, apply):
 
 
 @pytest.mark.parametrize("observation_kind", ["explicit", "legacy_run"])
-def test_older_gis_proof_cannot_overwrite_a_newer_primary_ingestion(context, observation_kind):
+@pytest.mark.parametrize("source_system", ["torgi.gov.ru", "bidexpert.ru", "lot-online.ru"])
+def test_older_proof_cannot_overwrite_a_newer_primary_ingestion(context, observation_kind, source_system):
     session, record, source, evidence = context
     observed_at = datetime.now(timezone.utc)
-    record.source_system = source.source_system = "torgi.gov.ru"
-    evidence[0]["normalized"]["source_system"] = "torgi.gov.ru"
+    record.source_system = source.source_system = source_system
+    evidence[0]["normalized"]["source_system"] = source_system
     evidence[0]["verification"].update(
-        source_url="https://torgi.gov.ru/1",
+        source_url=f"https://{source_system}/1",
         checked_at_utc=(observed_at - timedelta(minutes=1)).isoformat(),
     )
     if observation_kind == "explicit":

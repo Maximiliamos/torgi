@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 import hashlib
 import json
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select, func
@@ -15,6 +16,7 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.logic import _sync_source_lot, apply_lot_status, log_action
 from bankrotai.regions import REGIONS_BY_CODE
 from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
+from bankrotai.services.duplicate_projection_policy import valid_duplicate_target
 
 
 DEFAULT_REPORT_FIELDS = (
@@ -74,7 +76,10 @@ def _repair_state(session, record, source, apply):
     owner = session.scalar(owner_query.with_for_update() if apply else owner_query)
     owner_values = [[column.name, _plain(getattr(owner, column.name))]
                     for column in CanonicalLot.__table__.columns] if owner is not None else []
-    state = hashlib.sha256(json.dumps([_state(record, source), values, links, owner_values], sort_keys=True, default=str).encode()).hexdigest()
+    parent_query = select(ProcessedLot).where(ProcessedLot.id == record.duplicate_of_id)
+    parent = session.scalar(parent_query.with_for_update() if apply else parent_query) if record.duplicate_of_id else None
+    parent_state = _state(parent, None) if parent is not None else None
+    state = hashlib.sha256(json.dumps([_state(record, source), values, links, owner_values, parent_state], sort_keys=True, default=str).encode()).hexdigest()
     return state, canonical, links
 
 
@@ -150,6 +155,14 @@ def _repair_exact_lots(
                 changes[name] = {"before": _plain(current), "after": _plain(value)}
         if fresh_cadastres and set(fresh_cadastres) != set(record.cadastral_numbers or []):
             changes["cadastral_numbers"] = {"before": record.cadastral_numbers, "after": fresh_cadastres}
+        parent = session.get(ProcessedLot, record.duplicate_of_id) if record.duplicate_of_id else None
+        candidate = SimpleNamespace(id=record.id, source_system=record.source_system,
+            cadastral_numbers=fresh_cadastres or record.cadastral_numbers,
+            **{name: getattr(lot, name) if name in observed else getattr(record, name)
+               for name in ("cadastral_number", "lot_url", "source_url")})
+        detach_duplicate = bool(record.duplicate_of_id and not valid_duplicate_target(candidate, parent))
+        if detach_duplicate:
+            changes["duplicate_of_id"] = {"before": record.duplicate_of_id, "after": None}
         if lot.auction_status == "closed" and not record.is_archived:
             changes["is_archived"] = {"before": False, "after": True}
         protected = record.review_status is not None and not allow_reviewed_source_fields
@@ -235,6 +248,11 @@ def _repair_exact_lots(
                 if name != "id" and name not in observed and not (name == "region_code" and region_observed):
                     setattr(canonical, name, value)
         record.last_update = utc_now()
+        if detach_duplicate:
+            record.duplicate_of_id = None
+            if (not record.is_archived and lot.auction_status in {"active", "scheduled"}
+                    and (record.current_geo_lat is None or record.current_geo_lon is None)):
+                record.needs_geo_check = True
         if lot.auction_status == "closed":
             record.is_archived = True
             record.closed_at = record.closed_at or utc_now()
