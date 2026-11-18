@@ -561,7 +561,9 @@ def build_reliability_summary(
     configured_rows = [item for item in source_rows if item["configured"]]
     source_counts = {
         "configured_total": len(configured_rows),
+        "scheduled_total": sum(1 for item in configured_rows if item["scheduled"]),
         "connected_total": sum(1 for item in source_rows if item["role"] in {"configured", "pilot"}),
+        "pilot_total": sum(1 for item in source_rows if item["role"] == "pilot"),
         "historical_total": sum(1 for item in source_rows if item["role"] == "historical_only"),
         "paused_total": sum(1 for item in configured_rows if item["paused"]),
         "healthy": sum(1 for item in configured_rows if item["overall_status"] == "healthy"),
@@ -656,60 +658,59 @@ def build_reliability_summary(
             "detail": "Свободно менее 15 ГБ.",
         })
 
-    if not incident:
-        if source_counts["failed"] > 0 or source_counts["degraded"] > 0 or source_counts["not_checked"] > 0:
-            reasons.append({
-                "severity": "warning",
-                "code": "sources",
-                "title": "Часть источников требует внимания",
-                "detail": (
-                    f"Ошибки: {source_counts['failed']} · "
-                    f"ограничения: {source_counts['degraded']} · "
-                    f"не проверены: {source_counts['not_checked']}."
-                ),
-            })
-        if source_counts["configured_total"] and source_counts["complete_fresh"] < source_counts["configured_total"]:
-            reasons.append({
-                "severity": "warning",
-                "code": "coverage",
-                "title": "Не все полные снимки источников актуальны",
-                "detail": f"Актуальны {source_counts['complete_fresh']} из {source_counts['configured_total']}.",
-            })
-        if bool(geo.get("paused")):
-            reasons.append({
-                "severity": "warning",
-                "code": "geo_paused",
-                "title": "GEO поставлен на паузу",
-                "detail": f"Требуют обработки или повторной проверки: {int(geo.get('actionable_remaining') or 0):,}.",
-            })
-        elif int(geo.get("actionable_remaining") or 0) > 0:
-            reasons.append({
-                "severity": "warning",
-                "code": "geo_tail",
-                "title": "Есть очередь GEO",
-                "detail": f"Требуют обработки или повторной проверки: {int(geo.get('actionable_remaining') or 0):,}.",
-            })
-        if not runner["fresh"]:
-            reasons.append({
-                "severity": "warning",
-                "code": "runner_diagnostic",
-                "title": "Диагностика runner устарела",
-                "detail": "Это не означает, что runner offline; требуется свежая диагностическая проверка.",
-            })
-        if disk["status"] == "warning":
-            reasons.append({
-                "severity": "warning",
-                "code": "disk_warning",
-                "title": "Запас диска ниже рекомендуемого",
-                "detail": "Свободно от 15 до 25 ГБ.",
-            })
-        if map_snapshot["status"] == "degraded":
-            reasons.append({
-                "severity": "warning",
-                "code": "map_unverified",
-                "title": "Карта не полностью подтверждена",
-                "detail": "Требуется завершить сверку DB → Dataset → S3 → Public.",
-            })
+    if source_counts["failed"] > 0 or source_counts["degraded"] > 0 or source_counts["not_checked"] > 0:
+        reasons.append({
+            "severity": "warning",
+            "code": "sources",
+            "title": "Часть источников требует внимания",
+            "detail": (
+                f"Ошибки: {source_counts['failed']} · "
+                f"ограничения: {source_counts['degraded']} · "
+                f"не проверены: {source_counts['not_checked']}."
+            ),
+        })
+    if source_counts["configured_total"] and source_counts["complete_fresh"] < source_counts["configured_total"]:
+        reasons.append({
+            "severity": "warning",
+            "code": "coverage",
+            "title": "Не все полные снимки источников актуальны",
+            "detail": f"Актуальны {source_counts['complete_fresh']} из {source_counts['configured_total']}.",
+        })
+    if bool(geo.get("paused")):
+        reasons.append({
+            "severity": "warning",
+            "code": "geo_paused",
+            "title": "GEO поставлен на паузу",
+            "detail": f"Требуют обработки или повторной проверки: {int(geo.get('actionable_remaining') or 0):,}.",
+        })
+    elif int(geo.get("actionable_remaining") or 0) > 0:
+        reasons.append({
+            "severity": "warning",
+            "code": "geo_tail",
+            "title": "Есть очередь GEO",
+            "detail": f"Требуют обработки или повторной проверки: {int(geo.get('actionable_remaining') or 0):,}.",
+        })
+    if not runner["fresh"]:
+        reasons.append({
+            "severity": "warning",
+            "code": "runner_diagnostic",
+            "title": "Диагностика runner устарела",
+            "detail": "Это не означает, что runner offline; требуется свежая диагностическая проверка.",
+        })
+    if disk["status"] == "warning":
+        reasons.append({
+            "severity": "warning",
+            "code": "disk_warning",
+            "title": "Запас диска ниже рекомендуемого",
+            "detail": "Свободно от 15 до 25 ГБ.",
+        })
+    if map_snapshot["status"] == "degraded":
+        reasons.append({
+            "severity": "warning",
+            "code": "map_unverified",
+            "title": "Карта не полностью подтверждена",
+            "detail": "Требуется завершить сверку DB → Dataset → S3 → Public.",
+        })
 
     if incident:
         system_status = "incident"
