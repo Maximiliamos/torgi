@@ -139,3 +139,14 @@ def test_canonical_edit_and_changed_desired_values_invalidate_preview(context):
     with pytest.raises(ValueError, match="stale"):
         repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
                                     expected_states=states, expected_evidence_sha256=preview["evidence_sha256"])
+
+
+def test_older_snapshot_cannot_overwrite_a_newer_verified_field(context):
+    session, record, source, evidence = context
+    newer = datetime.now(timezone.utc).isoformat()
+    source.raw_data = {"verified_source_fields": {"address": {"checked_at_utc": newer, "sha256": "b" * 64}}}
+    session.commit()
+    evidence[0]["verification"]["checked_at_utc"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    with pytest.raises(ValueError, match="older than"):
+        repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert record.address == "Старый адрес"

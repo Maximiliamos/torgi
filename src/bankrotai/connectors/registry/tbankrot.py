@@ -12,7 +12,7 @@ from bankrotai.scraper_contracts import TBankrotSearchFilters
 class TBankrotConnector(AuctionConnector):
     source_id = "tbankrot.ru"
     capabilities = frozenset({"search", "detail_enrichment"})
-    detail_enrichment_version = 5
+    detail_enrichment_version = 6
 
     def __init__(self) -> None:
         from bankrotai.scrapers import TBankrotClient
@@ -51,6 +51,8 @@ class TBankrotConnector(AuctionConnector):
             return lot
 
         fields = await asyncio.to_thread(self.client.fetch_detail_fields, lot.lot_url)
+        if not fields.get("detail_identity_verified"):
+            raise ValueError("TBankrot detail lacks independent exact-lot identity")
         if fields.get("detail_identity_verified"):
             from bankrotai.logic import classify_category
             lot.title = fields.get("title") or lot.title

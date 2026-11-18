@@ -4,6 +4,8 @@ import hashlib
 import json
 import re
 from urllib.parse import urlsplit
+from sqlalchemy import select
+from bankrotai.db import SourceLot
 
 from bankrotai.services.asset_category import classify_category
 from bankrotai.services.reported_lot_repair import SOURCE_FIELDS, _repair_exact_lots
@@ -17,6 +19,7 @@ def repair_verified_source_lots(
     if not evidence or len(evidence) > 100:
         raise ValueError("Verified repair requires 1..100 exact source records")
     now = datetime.now(timezone.utc)
+    previous_verifications = {}
     for item in evidence:
         proof = item.get("verification", {})
         lot = item.get("normalized", {})
@@ -53,6 +56,20 @@ def repair_verified_source_lots(
                 raise ValueError("Category correction requires fresh title and description")
             if lot.get("category") != classify_category(lot.get("title", ""), lot.get("description", "")):
                 raise ValueError("Category differs from primary-asset evidence")
+        existing = session.scalar(select(SourceLot).where(
+            SourceLot.source_system == source, SourceLot.external_id == lot["external_id"],
+        ))
+        existing_raw = existing.raw_data or {} if existing is not None else {}
+        field_times = dict(existing_raw.get("verified_source_fields") or {})
+        previous_verifications[item["lot_id"]] = field_times
+        for name in observed:
+            stamp = (field_times.get(name) or {}).get("checked_at_utc")
+            if not stamp and name in existing_raw.get("repair_observed_fields", []):
+                stamp = existing_raw.get("repair_evidence_checked_at")
+            if stamp:
+                previous = datetime.fromisoformat(stamp)
+                if previous.tzinfo is None or previous > checked:
+                    raise ValueError(f"Source evidence is older than the verified field: {name}")
     digest = hashlib.sha256(json.dumps(evidence, sort_keys=True, default=str).encode()).hexdigest()
     if apply and expected_evidence_sha256 != digest:
         raise ValueError("Evidence does not match the reviewed preview")
@@ -62,4 +79,15 @@ def repair_verified_source_lots(
         audit_scope="verified_source",
     )
     result["evidence_sha256"] = digest
+    if apply:
+        for item in evidence:
+            lot, proof = item["normalized"], item["verification"]
+            source_row = session.scalar(select(SourceLot).where(
+                SourceLot.source_system == lot["source_system"], SourceLot.external_id == lot["external_id"],
+            ))
+            if source_row is not None:
+                verified = dict(previous_verifications[item["lot_id"]])
+                verified.update({name: {"sha256": proof["sha256"], "checked_at_utc": proof["checked_at_utc"]}
+                                 for name in lot["raw_data"]["repair_observed_fields"]})
+                source_row.raw_data = {**source_row.raw_data, "verified_source_fields": verified}
     return result
