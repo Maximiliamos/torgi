@@ -90,6 +90,7 @@ from bankrotai.services.quality import (
     map_delivery_reconciliation_report,
     operational_quality_report,
 )
+from bankrotai.services.reliability_api import create_reliability_router
 from bankrotai.services.map_source_filters import (
     map_source_catalogue, parse_source_selection,
 )
@@ -160,6 +161,11 @@ _READ_ONLY_EXACT_PATHS = {
     "/api/auth/logout",
     "/api/auth/me",
     "/api/operations/progress",
+    "/api/reliability/summary",
+    "/api/reliability/sources",
+    "/api/reliability/map-delivery",
+    "/api/quality/operational",
+    "/api/quality/map-delivery",
     "/api/operations/geocoding/fast-drain/plan",
     "/api/tbankrot/auth/status",
     "/api/tbankrot/auth/screenshot",
@@ -475,6 +481,7 @@ app.include_router(create_etp_incremental_preview_router(require_admin))
 app.include_router(create_etp_qa_map_router(require_admin))
 app.include_router(create_etp_parser_checklist_router(require_admin))
 app.include_router(create_lot_issue_report_router(require_user))
+app.include_router(create_reliability_router(require_user))
 @app.get("/")
 def read_root():
     return {"message": "Welcome to BankrotAI API"}

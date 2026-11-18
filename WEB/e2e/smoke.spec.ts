@@ -296,7 +296,9 @@ test("authenticated list search detail and API failure smoke", async ({
   await page.getByRole("button", { name: "Сделка", exact: true }).click();
   await expect(page.getByText("Работа со сделкой")).toBeVisible();
   await page.getByRole("button", { name: "Надёжность", exact: true }).click();
-  await expect(page.getByText("Состояние источников")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Источники", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "GEO", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Карта", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Реестр", exact: true }).click();
   await expect(page.locator(".workspace")).toBeVisible();
   await expect(page.locator(".lotToolbar")).toBeVisible();

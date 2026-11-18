@@ -1,5 +1,7 @@
 import type { MapLot } from "./map-lot";
+import type { ReliabilitySource, ReliabilitySummary } from "./reliability";
 export type { MapLot } from "./map-lot";
+export type { ReliabilitySource, ReliabilitySummary } from "./reliability";
 
 export type SortMode = "recommended" | "price_asc" | "price_desc" | "discount" | "newest";
 export type MainView = "search" | "registry" | "map" | "deal" | "reliability" | "tbankrot";
@@ -247,6 +249,7 @@ export type SourceHealth = {
   last_items_archived: number;
   last_items_failed: number;
 };
+
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const RETRYABLE_READ_STATUSES = new Set([502, 503, 504]);
@@ -1115,6 +1118,10 @@ export const compareDocuments = (lotId: number, fromId: number, toId: number) =>
 
 export const fetchQuality = () => requestJson<QualitySnapshot>("/api/quality");
 export const fetchSources = () => requestJson<SourceHealth[]>("/api/sources");
+export const fetchReliabilitySummary = () => requestJson<ReliabilitySummary>("/api/reliability/summary");
+export const fetchReliabilitySources = () => requestJson<ReliabilitySource[]>("/api/reliability/sources");
+export const fetchReliabilityMapDelivery = (verifyManifest = true) =>
+  requestJson<ReliabilitySummary["map"]>("/api/reliability/map-delivery", { verify_manifest: verifyManifest });
 export const fetchDiagnostics = () => requestJson<Record<string, unknown>>("/api/diagnostics");
 export const fetchCapabilities = () => requestJson<{ curated_mode: boolean; region_sync: boolean; bulk_torgi_sync: boolean; background_jobs: boolean }>("/api/capabilities");
 export const fetchRegions = () => requestJson<RegionOption[]>("/api/regions");
