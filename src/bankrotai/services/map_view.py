@@ -11,7 +11,7 @@ from bankrotai.services.map_source_filters import source_match_condition
 from bankrotai.services.map_payload import ENDED_STATUSES
 from bankrotai.core import get_region_query_values
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
-from bankrotai.services.source_auction_facts import business_datetime_iso, source_auction_date, unverified_auction_fields
+from bankrotai.services.source_auction_facts import business_datetime_iso, source_auction_date, trusted_preview_raw, unverified_auction_fields
 from bankrotai.services.map_geo_projection import current_map_geo
 
 
@@ -89,7 +89,7 @@ def _map_lot_payload(
     etp_url = None
     russia_url = None
     for source in ([primary] if primary is not None else []):
-        raw = source.raw_data if isinstance(source.raw_data, dict) else {}
+        raw = trusted_preview_raw(source)
         for url in extract_map_image_urls(raw):
             if url not in images:
                 images.append(url)

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from bankrotai.db import SourceLot
-from bankrotai.services.source_auction_facts import business_datetime_iso, source_auction_date, unverified_auction_fields
+from bankrotai.services.source_auction_facts import business_datetime_iso, source_auction_date, trusted_preview_raw, unverified_auction_fields
 
 
 @pytest.mark.parametrize("proof_kind", ["legacy", "scoped", "receipt", "wrong_identity"])
@@ -34,3 +34,15 @@ def test_other_source_business_dates_do_not_need_lotonline_scope_metadata():
     source = SourceLot(source_system="torgi.gov.ru", application_deadline=datetime(2026, 8, 23, 19, 30))
     assert source_auction_date(source, "application_deadline") == source.application_deadline
     assert unverified_auction_fields(source) == []
+
+
+@pytest.mark.parametrize("version", [5, 7])
+def test_russia_recommendation_metadata_requires_current_exact_detail_identity(version):
+    original = datetime(2026, 12, 1, 18)
+    source = SourceLot(source_system="torgi-russia.ru", external_id="torgi-russia:111", application_deadline=original,
+                       raw_data={"detail_enrichment_version": version, "detail_identity_verified": True,
+                                 "detail_external_id": "torgi-russia:111", "application_deadline": original.isoformat(),
+                                 "gis_torgi_url": "https://torgi.gov.ru/lot/1", "image_urls": ["https://example.test/one.jpg"]})
+    assert source_auction_date(source, "application_deadline") == (original if version == 7 else None)
+    assert bool(trusted_preview_raw(source)) == (version == 7)
+    assert source.raw_data["image_urls"] == ["https://example.test/one.jpg"]

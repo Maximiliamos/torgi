@@ -5653,7 +5653,7 @@ class MainWindow(QMainWindow):
         geo: LotGeoSnapshot | None,
         source_lots: list[SourceLot] | None = None,
     ) -> dict:
-        from bankrotai.services.source_auction_facts import source_auction_date, unverified_auction_fields
+        from bankrotai.services.source_auction_facts import source_auction_date, trusted_preview_raw, unverified_auction_fields
         from bankrotai.business_time import to_moscow_datetime
         from bankrotai.services.map_geo_projection import current_map_geo
 
@@ -5685,7 +5685,7 @@ class MainWindow(QMainWindow):
         etp_url = None
         torgi_russia_url = None
         for source in ([primary_source] if primary_source is not None else []):
-            raw_data = source.raw_data if isinstance(source.raw_data, dict) else {}
+            raw_data = trusted_preview_raw(source)
             for image_url in extract_preview_image_urls(raw_data):
                 if image_url not in image_urls:
                     image_urls.append(image_url)

@@ -328,3 +328,8 @@
     текущей точке без matching snapshot выдаётся только текущая точка,
     без чужой старой geometry/metadata и без записи нового snapshot в БД.
     Две DB-регрессии invalidated/moved current point пройдены.
+47. Legacy Torgi Russia metadata также содержит глобально извлечённые links,
+    фото и fallback dates. До fresh exact-ID detail v7 либо explicit primary
+    proof эти данные не подставляются в подтверждённые preview/date поля.
+    Raw history сохраняется. Две регрессии legacy/current identity пройдены;
+    полный v7 source refresh и production-проверка остаются впереди.
