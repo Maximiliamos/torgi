@@ -29,7 +29,7 @@ def main():
     payload = json.load(sys.stdin)
     receipts = payload["receipts"]
     mode = payload.get("mode", "stale_no_match")
-    if mode not in {"stale_no_match", "current_missing_geo"}:
+    if mode not in {"stale_no_match", "current_missing_geo", "current_address_precision"}:
         raise ValueError("Unknown NSPD operator mode")
     ids = [int(lot_id) for r in receipts for lot_id in r["lot_ids"]]
     if not receipts or not 1 <= len(ids) <= 100 or len(set(ids)) != len(ids):
@@ -48,7 +48,8 @@ def main():
             session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
         before = digest(session)
         result = replay_current_nspd(session,receipts=receipts,apply=bool(payload.get("apply")),
-            expected=payload.get("expected_current_plan")) if mode == "current_missing_geo" else recover_stale_cadastral_live_results(
+            expected=payload.get("expected_current_plan"),
+            replace_address_precision=mode == "current_address_precision") if mode in {"current_missing_geo", "current_address_precision"} else recover_stale_cadastral_live_results(
             session, lot_ids=ids,
             live_result_probe=lambda cadastre: (results.get(cadastre), "primary_receipt_identity_missing"),
             apply=bool(payload.get("apply")),
