@@ -183,3 +183,24 @@ def test_centerr_verify_identity_rejects_trade_or_lot_substitution():
     )
     with pytest.raises(CenterRContractError, match="catalogue/detail identity mismatch"):
         verify_identity(catalogue, detail)
+
+
+@pytest.mark.parametrize('encoding,meta',[
+ ('utf-8','<meta charset="mac-cyrillic">'),
+ ('utf-8-sig',''),
+ ('windows-1251','<meta charset="windows-1251">'),
+])
+def test_detail_decoding_preserves_cyrillic_identity_price_and_cadastre(encoding,meta):
+    html=f'''<html><head>{meta}</head><body>
+    Информация о публичном предложении №0101344
+    Информация о лоте №1 Номер: 1
+    Наименование: Земельный участок, кадастровый номер 74:12:1408001:41
+    Дата начала первого интервала: 28.10.2026 10:00
+    Статус: Прием заявок Дата окончания представления заявок: 25.11.2026 10:00
+    Начальная цена, руб.: 88 830,00
+    </body></html>'''
+    lot=parse_detail(html.encode(encoding),detail_url='https://bankrupt.centerr.ru/public/public-offers/lots/view/1171405/',
+                     external_id='centerr.ru:public-offers-1171405')
+    assert lot.raw_data['trade_id']=='0101344' and lot.raw_data['lot_number']=='1'
+    assert lot.start_price==88830 and lot.cadastral_number=='74:12:1408001:41'
+    assert lot.title.startswith('Земельный участок') and lot.auction_status=='active'
