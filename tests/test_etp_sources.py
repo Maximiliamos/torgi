@@ -21,6 +21,20 @@ def profile(source_id: str):
     return next(item for item in PROFILES if item.source_id == source_id)
 
 
+def test_default_requests_identity_is_replaced_with_honest_connector_identity():
+    session = requests.Session()
+    assert session.headers["User-Agent"].startswith("python-requests/")
+    SOURCE_CONNECTOR_TYPES["roseltorg.ru"](session=session)
+    assert session.headers["User-Agent"].startswith("TORGI/1.0")
+
+
+def test_explicit_caller_user_agent_is_preserved():
+    session = requests.Session()
+    session.headers["User-Agent"] = "SourceAudit/1.0"
+    SOURCE_CONNECTOR_TYPES["roseltorg.ru"](session=session)
+    assert session.headers["User-Agent"] == "SourceAudit/1.0"
+
+
 @pytest.mark.parametrize(
     ("source_id", "href", "title"),
     [

@@ -1,7 +1,8 @@
 """Journal primary NSPD responses for the complete eligible stale no-match cohort.
 
 No database, queue, map or provider-health writes. One request per second,
-no retries, stop on any transport/access error. A response is evidence, not
+no retries; stop on access/circuit errors or three consecutive timeouts.
+Isolated timeout receipts remain unverified. A response is evidence, not
 permission to assign coordinates: the normal GEO validator is still required.
 """
 import argparse
@@ -47,6 +48,7 @@ def main():
                       "database_writes": 0, "complete_source_inventory": False}), flush=True)
     client = requests.Session()
     previous = 0.0
+    consecutive_timeouts = 0
     for target in targets:
         time.sleep(max(0, 1.0 - (time.monotonic() - previous)))
         receipt = {**target, "checked_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -74,10 +76,19 @@ def main():
                 features = (payload.get("data") or {}).get("features") or payload.get("features") or []
                 feature = pick_nspd_feature(features, target["cadastral_number"])
                 receipt["result"] = "exact_feature" if feature else "no_exact_feature"
+        except requests.Timeout as exc:
+            consecutive_timeouts += 1
+            receipt.update(result="operational_error", error_type=type(exc).__name__, error=str(exc)[:200])
+            print(json.dumps(receipt, ensure_ascii=True), flush=True)
+            if consecutive_timeouts >= 3:
+                raise SystemExit("NSPD repeatedly timed out; remaining cohort stays unverified") from None
+            continue
         except Exception as exc:
-            receipt.update(result="operational_stop", error_type=type(exc).__name__)
+            receipt.update(result="operational_stop", error_type=type(exc).__name__,
+                           error_category=getattr(exc, "category", None), error=str(exc)[:200])
             print(json.dumps(receipt, ensure_ascii=True), flush=True)
             raise SystemExit("NSPD refused/unavailable; remaining cohort stays unverified") from None
+        consecutive_timeouts = 0
         print(json.dumps(receipt, ensure_ascii=True), flush=True)
     print(json.dumps({"event": "cohort_finished", "checked": len(targets), "database_writes": 0}), flush=True)
 

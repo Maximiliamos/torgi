@@ -19,7 +19,7 @@
 | lot-online.ru | PASS | PASS | N/A | N/A | В выборке не зафиксировано; полный проход не доказан |
 | m-ets.ru | PASS | PASS | PASS | FAIL | auction_status / unknown_status_in_sample |
 | nistp.ru | PASS | PASS | PASS | PASS | В выборке не зафиксировано; полный проход не доказан |
-| roseltorg.ru | BLOCKED | NOT_TESTED | NOT_TESTED | NOT_TESTED | transport / transport_ConnectionError |
+| roseltorg.ru | PASS (18.11, TORGI UA) | PASS (выборка) | PASS (выборка) | PASS (выборка) | Поля каталога неполны; полная пагинация не доказана |
 | rts-tender.ru | BLOCKED | NOT_TESTED | NOT_TESTED | NOT_TESTED | transport / profile_explicitly_blocked |
 | rus-on.ru | PASS | PASS | PASS | PASS | initial_or_current_price / missing_individual_prices_in_sample |
 | sberbank-ast.ru | PASS | PASS | FAIL | FAIL | individual_detail_price / missing_price_in_fetched_detail |
@@ -28,7 +28,7 @@
 | torgi-russia.ru | PASS (выборка) | NOT_TESTED | NOT_TESTED | NOT_TESTED | Detail и полный проход этой проверкой не подтверждены |
 | torgi.gov.ru | PASS (выборка) | NOT_TESTED | NOT_TESTED | NOT_TESTED | Detail и полный проход этой проверкой не подтверждены |
 | utender.ru | BLOCKED | NOT_TESTED | NOT_TESTED | NOT_TESTED | transport / profile_explicitly_blocked |
-| utpl.ru | BLOCKED | NOT_TESTED | NOT_TESTED | NOT_TESTED | transport / transport_ConnectionError |
+| utpl.ru | PASS (18.11, TORGI UA) | PASS (выборка) | PASS (выборка) | PASS (выборка) | Поля каталога неполны; полный проход не выполнен |
 | vertrades.ru | PASS | PASS | PASS | PASS | property_classification / unclassified_sample |
 | zakazrf.ru | PASS | PASS | PASS | PASS | initial_or_current_price / missing_individual_prices_in_sample |
 
@@ -55,3 +55,12 @@ Issuer chain проверена существующим root bundle; добав
 подготовлен в #1255. Эти транспортные проверки не доказывают весь каталог.
 
 Приватные файлы: `.artifacts/finish/all-etp-stage-audit.log`, `core-five-deployed-audit.log`, `etp-dcd-manual-qa/etp-manual-qa-all.json`. В матрицу не включены cookies, credentials или исходные персональные данные.
+
+Последующая проверка выявила, что Session по умолчанию сохранял
+python-requests User-Agent: setdefault не устанавливал предусмотренный
+идентификатор TORGI. После явной установки честного TORGI User-Agent
+Roseltorg/UTPL проходят transport и выборочный detail identity/price/status.
+Свой явно заданный User-Agent вызывающего кода сохраняется. Каталожные
+поля и полная пагинация не объявлены исправленными этим сетевым патчем.
+У Профит после TLS-доступа выявлено пересечение ID соседних страниц;
+оно остаётся незакрытым ограничением, не обходится ослаблением проверки.

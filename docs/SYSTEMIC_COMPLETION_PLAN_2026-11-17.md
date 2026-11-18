@@ -263,3 +263,18 @@
     Title fallback не объявляется буквальным description; категория выводится
     только при наличии свежих title и description. Регрессии source refresh,
     stale evidence и fallback пройдены; новая очередь ещё не развёрнута.
+36. Повторная read-only сверка всех 44 исходных обращений: 44 PASS,
+    обращения сохранены, 38 исключений действуют, три исправленные карточки
+    остаются closed/archived. На dataset 20261118T033417312498Z-r10-bundle-s3
+    их нет; 466 оценок и notes digest полностью совпали с контрольным.
+    Индивидуальная таблица: REPORT_CASE_VERIFICATION_2026-11-18.md.
+37. Исправлен фактический default User-Agent generic ETP session:
+    setdefault оставлял python-requests вместо предусмотренного TORGI.
+    С честным TORGI identifier Roseltorg/UTPL проходят transport и bounded
+    detail identity/price/status; 85 source/architecture тестов прошли.
+    Неполнота каталоговых полей и Profit pagination overlap не названы PASS.
+38. Полный raw-data срез GIS currency: 61785 code 643, 464 без code,
+    из них 448 с положительной ценой. Запущена отдельная прямая API проверка
+    этих 464 ID; отсутствующую валюту нельзя объявить подтверждённой по XLSX.
+    Данные ремонта подготовлены для всех 62249 GIS ID, первый preview 100
+    прошёл без блокировок/удалений; применение ждёт завершения source run.
