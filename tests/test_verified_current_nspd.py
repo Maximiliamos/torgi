@@ -170,3 +170,55 @@ def test_automatic_stale_recovery_still_excludes_reviewed_rows(context):
         live_result_probe=lambda _: (nspd_result_from_receipt(evidence[0]),''))
     assert result['accepted']==0
     assert replay_current_nspd(session,receipts=evidence)['accepted']==1
+
+
+def bind_imprecise_current_point(context):
+    session,lot,source,_,snapshot=context
+    lot.current_geo_lat=snapshot.centroid_lat
+    lot.current_geo_lon=snapshot.centroid_lon
+    lot.current_geo_observed_at=snapshot.observed_at
+    lot.current_geo_source='photon'
+    lot.current_geo_confidence='high'
+    source.cadastral_number=lot.cadastral_number
+    snapshot.metadata_json={'query':'Ярославская область, дом 2',
+                            'address':'Ярославская область, дом 4'}
+    session.commit()
+
+
+def test_exact_primary_geometry_replaces_proven_address_precision_defect_preserving_history(context):
+    bind_imprecise_current_point(context)
+    session,lot,source,note,old=context
+    evidence=[receipt(lot.id)]
+    preview=replay_current_nspd(session,receipts=evidence,replace_address_precision=True)
+    assert preview['accepted']==1 and lot.current_geo_lat==old.centroid_lat
+    result=replay_current_nspd(session,receipts=evidence,replace_address_precision=True,apply=True,expected=preview)
+    session.commit()
+    assert result['updated']==1 and (lot.current_geo_lat,lot.current_geo_lon)==(57.1,39.4)
+    assert lot.review_status=='approved' and lot.rating==78 and note.lot_id==lot.id
+    assert source.start_price==100 and session.get(LotGeoSnapshot,old.id) is not None
+    assert len(list(session.scalars(select(LotGeoSnapshot))))==2
+
+
+@pytest.mark.parametrize('change',['valid_address','primary_point','missing_source_cadastre','no_current_snapshot'])
+def test_address_replacement_requires_own_current_defective_snapshot_and_source_cadastre(context,change):
+    bind_imprecise_current_point(context)
+    session,lot,source,_,snapshot=context
+    if change=='valid_address':snapshot.metadata_json={'query':'Ярославская область, дом 2','address':'Ярославская область, дом 2'}
+    elif change=='primary_point':snapshot.geo_source='nspd'
+    elif change=='missing_source_cadastre':source.cadastral_number=None
+    else:lot.current_geo_observed_at=None
+    session.commit()
+    assert replay_current_nspd(session,receipts=[receipt(lot.id)],replace_address_precision=True)['accepted']==0
+    assert lot.current_geo_lat==snapshot.centroid_lat
+
+
+def test_address_snapshot_change_invalidates_exact_replacement_preview(context):
+    bind_imprecise_current_point(context)
+    session,lot,_,_,snapshot=context
+    evidence=[receipt(lot.id)]
+    preview=replay_current_nspd(session,receipts=evidence,replace_address_precision=True)
+    snapshot.metadata_json={**snapshot.metadata_json,'address':'Ярославская область, дом 6'}
+    session.flush()
+    with pytest.raises(ValueError,match='stale'):
+        replay_current_nspd(session,receipts=evidence,replace_address_precision=True,apply=True,expected=preview)
+    assert lot.current_geo_lat==snapshot.centroid_lat
