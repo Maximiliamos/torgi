@@ -9,11 +9,13 @@ import {
   addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCapabilities, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
   fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchRegions, fetchServerTime,
   fetchSavedSearches, fetchStats, fetchTBankrotAuthStatus, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
-  clearMapCache, fetchOperationsProgress, fetchReliabilitySources, fetchReliabilitySummary, MainView, MaxBidScenario, OnlineLot, OperationsProgress, Participation, pauseGeocoding, probeSourceHealth, Procedure, RegionOption, ReliabilitySource, ReliabilitySummary, resumeGeocoding, saveParticipation, searchOnline,
+  clearMapCache, fetchOperationsProgress, MainView, MaxBidScenario, OnlineLot, OperationsProgress, Participation, pauseGeocoding, probeSourceHealth, Procedure, RegionOption, resumeGeocoding, saveParticipation, searchOnline,
   saveSearch, SearchSource, SortMode, splitLot, StatsResponse, toggleWatchlist
 } from "./lib/api";
 import { MapView } from "./features/map/MapView";
 import { TBankrotView } from "./features/tbankrot/TBankrotView";
+import { fetchReliabilitySources, fetchReliabilitySummary } from "./features/reliability/api";
+import type { ReliabilitySource, ReliabilitySummary } from "./features/reliability/api";
 import "./styles.css";
 
 const CATEGORIES = [
