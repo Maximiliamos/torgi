@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from bankrotai import api
+from bankrotai.services import reliability_api
 from bankrotai.auth import AuthenticatedUser
 from bankrotai.db import AppSetting, Base, LotSyncRun, LotSyncSourceRun, ProcessedLot
 from bankrotai.services.reliability import (
@@ -175,9 +176,9 @@ def test_reliability_get_endpoints_are_available_in_read_only_mode(monkeypatch) 
 
     monkeypatch.setattr(api, "read_session_scope", scope)
     monkeypatch.setattr(api.settings, "api_read_only", True)
-    monkeypatch.setattr(api, "build_reliability_summary", lambda *args, **kwargs: {"schema_version": 1})
-    monkeypatch.setattr(api, "build_reliability_sources", lambda *args, **kwargs: [])
-    monkeypatch.setattr(api, "reliability_map_delivery", lambda *args, **kwargs: {"status": "ok"})
+    monkeypatch.setattr(reliability_api, "build_reliability_summary", lambda *args, **kwargs: {"schema_version": 1})
+    monkeypatch.setattr(reliability_api, "build_reliability_sources", lambda *args, **kwargs: [])
+    monkeypatch.setattr(reliability_api, "reliability_map_delivery", lambda *args, **kwargs: {"status": "ok"})
 
     api.app.dependency_overrides[api.require_user] = lambda: AuthenticatedUser(
         id=1,
