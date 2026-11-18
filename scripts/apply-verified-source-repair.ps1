@@ -5,7 +5,8 @@ param(
     [string]$Evidence = '.artifacts/finish/tbankrot-systemic-verified-evidence.json',
     [string]$Plan = '.artifacts/finish/tbankrot-systemic-repair-preview.json',
     [string]$Output = '.artifacts/finish/tbankrot-systemic-repair-result.json',
-    [string]$BackupMetadata
+    [string]$BackupMetadata,
+    [string]$MaintenanceRunId
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -26,6 +27,7 @@ foreach ($name in @('reported_lot_repair', 'verified_source_repair')) {
 $payload = @{
     apply = [bool]$Apply
     rollback_only = [bool]$ValidateTransaction
+    maintenance_run_id = $MaintenanceRunId
     modules = $modules
     evidence = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $Evidence)))
     expected = $(if ($Apply) { [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root $Plan))) } else { $null })
@@ -33,8 +35,9 @@ $payload = @{
 $payload64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Depth 5 -Compress)))
 $code = @'
 import base64,hashlib,json,sys,types
+from datetime import timedelta
 from sqlalchemy import select,text
-from bankrotai.db import SessionLocal,LotSyncRun
+from bankrotai.db import SessionLocal,LotSyncRun,utc_now
 p=json.loads(base64.b64decode('PAYLOAD64'))
 for leaf in ['reported_lot_repair','verified_source_repair']:
  name='bankrotai.services.'+leaf
@@ -52,13 +55,25 @@ with SessionLocal() as session:
  if not p['apply']:session.execute(text('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY'))
  else:
   session.execute(text("SET LOCAL lock_timeout = '10s'"))
-  if session.scalar(select(LotSyncRun.id).where(LotSyncRun.status.in_(['queued','running'])).limit(1)):
-   raise RuntimeError('Active ingestion; defer exact source repair')
+  active=session.scalars(select(LotSyncRun).where(LotSyncRun.status.in_(['queued','running']))).all()
+  if active:
+   if len(active)!=1 or active[0].id!=p['maintenance_run_id'] or active[0].trigger_type!='source_repair':
+    raise RuntimeError('Active ingestion; defer exact source repair')
+   if not active[0].lease_expires_at or active[0].lease_expires_at<utc_now().replace(tzinfo=None):
+    raise RuntimeError('Source repair maintenance lease expired')
+  elif p['maintenance_run_id']:
+   raise RuntimeError('Source repair maintenance lease is missing')
  result=module.repair_verified_source_lots(session,evidence=evidence,allowed_lot_ids=scope,
   apply=p['apply'],expected_states=states,
   expected_evidence_sha256=expected['evidence_sha256'] if expected else None)
  result['evidence_file_sha256']=file_sha
  if p['apply']:
+  if p['maintenance_run_id']:
+   run=session.get(LotSyncRun,p['maintenance_run_id'])
+   run.heartbeat_at=utc_now()
+   run.lease_expires_at=utc_now()+timedelta(minutes=10)
+   run.result_json={**(run.result_json or {}),'last_batch_selected':result['selected'],
+    'repaired_records':int((run.result_json or {}).get('repaired_records',0))+result['selected']}
   session.flush()
   if p['rollback_only']:session.rollback()
   else:session.commit()
