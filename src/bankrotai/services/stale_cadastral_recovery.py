@@ -209,8 +209,12 @@ def recover_stale_cadastral_live_results(
     # changing production state so a concurrent ingestion update fails closed.
     session.expire_all()
     for lot_id, cadastral, candidate in proven:
-        lot = session.get(ProcessedLot, lot_id)
-        failure = session.scalar(select(GeoFailure).where(GeoFailure.lot_id == lot_id))
+        lot = session.scalar(select(ProcessedLot).where(
+            ProcessedLot.id == lot_id,
+        ).with_for_update())
+        failure = session.scalar(select(GeoFailure).where(
+            GeoFailure.lot_id == lot_id,
+        ).with_for_update())
         if (
             lot is None
             or failure is None

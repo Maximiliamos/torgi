@@ -221,3 +221,29 @@ def test_live_result_recovery_runs_normal_validation_before_write() -> None:
         {"lot_id": lot_id, "reason": "validation:region_cadastral_mismatch"}
     ]
     session.close()
+
+
+def test_live_result_recovery_does_not_write_after_source_cadastre_changes() -> None:
+    session = _session()
+    lot_id = _seed(session)
+
+    def probe(cadastral):
+        with Session(session.get_bind()) as updater:
+            lot = updater.get(ProcessedLot, lot_id)
+            lot.cadastral_number = "77:01:0004010:123"
+            updater.commit()
+        return CadastralObjectResult(
+            query=cadastral, cadastral_number=cadastral,
+            lat=57.1, lon=39.4, source="nspd", confidence="high",
+        ), "exact_match"
+
+    result = recover_stale_cadastral_live_results(
+        session, lot_ids=[lot_id], live_result_probe=probe, apply=True,
+    )
+    session.commit()
+    assert result["accepted"] == 1
+    assert result["updated"] == 0
+    assert session.get(ProcessedLot, lot_id).current_geo_lat is None
+    assert session.query(LotGeoSnapshot).count() == 0
+    assert session.query(GeoFailure).filter_by(lot_id=lot_id).one().status == "deferred_no_match"
+    session.close()
