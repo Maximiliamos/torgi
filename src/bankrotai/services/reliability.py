@@ -335,6 +335,7 @@ def reliability_summary(session: Session) -> dict[str, Any]:
     status = "incident" if incident else "degraded" if degraded else "ok"
 
     dataset = map_report.get("dataset") or {}
+    delivery_ok = bool(map_report.get("ok")) and manifest.get("checked") is True and manifest.get("ok") is True
     return {
         "schema_version": 1,
         "generated_at": utc_now().isoformat(),
@@ -346,7 +347,7 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         "sources": {key: value for key, value in sources.items() if key != "items"},
         "geo": geo,
         "map": {
-            "ok": bool(map_report.get("ok")),
+            "ok": delivery_ok,
             "dataset_version": dataset.get("version"),
             "dataset_status": dataset.get("status"),
             "point_count": dataset.get("declared_point_count"),
