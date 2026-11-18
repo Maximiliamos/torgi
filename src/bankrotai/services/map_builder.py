@@ -34,7 +34,7 @@ from bankrotai.services.map_dataset_version import (
     dataset_pipeline_revision,
 )
 from bankrotai.services.map_publication_integrity import exact_map_input_fingerprint
-from bankrotai.services.map_property_eligibility import map_property_eligible, map_property_evidence_columns
+from bankrotai.services.map_property_eligibility import map_property_eligible, map_property_evidence_columns, map_source_join_condition
 
 MAX_DATASET_ZOOM = 14
 POINT_ZOOM = 12
@@ -632,7 +632,7 @@ def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
                     ProcessedLot.current_geo_lon.label("centroid_lon"),
                 )
                 .select_from(ProcessedLot)
-                .outerjoin(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id)
+                .outerjoin(SourceLot, map_source_join_condition())
                 .where(
                     ProcessedLot.duplicate_of_id.is_(None),
                     ProcessedLot.is_archived.is_(False),

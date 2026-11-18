@@ -15,10 +15,21 @@ def map_property_evidence_columns() -> tuple:
         SourceLot.auction_type,
         SourceLot.raw_data["typeTransaction"].as_string().label("source_transaction"),
         SourceLot.raw_data["raw"]["typeTransaction"].as_string().label("official_transaction"),
+        SourceLot.raw_data["source_sale_eligibility"].as_boolean().label("source_sale_eligible"),
     )
 
 
+def map_source_join_condition():
+    from sqlalchemy import and_
+    from bankrotai.db import ProcessedLot, SourceLot
+
+    return and_(SourceLot.source_system == ProcessedLot.source_system,
+                SourceLot.external_id == ProcessedLot.external_id)
+
+
 def map_property_eligible(row: Mapping[str, Any]) -> bool:
+    if row.get("source_sale_eligible") is False:
+        return False
     transaction = row.get("official_transaction") or row.get("source_transaction")
     if isinstance(transaction, str) and transaction.startswith("{"):
         try:

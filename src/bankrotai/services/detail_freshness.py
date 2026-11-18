@@ -6,7 +6,8 @@ This module has no network or database side effects.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Mapping
@@ -35,6 +36,23 @@ def reuse_detail_evidence(lot: Any, existing: Any, previous_raw: dict, current_r
     lot.raw_data = {**previous_raw, **current_raw}
     if not current_raw.get("cadastral_numbers") and previous_raw.get("cadastral_numbers"):
         lot.raw_data["cadastral_numbers"] = previous_raw["cadastral_numbers"]
+
+
+async def refresh_detail_evidence(lot: Any, connector: Any, semaphore: Any, refused: Any = None) -> None:
+    """Do not expose partially mutated source facts when a detail request fails."""
+    candidate = replace(lot, raw_data=deepcopy(lot.raw_data or {}))
+    async with semaphore:
+        if refused is not None and refused.is_set():
+            raise RuntimeError("Detail source access was refused earlier in this page")
+        await connector.enrich_lot(candidate)
+    if (candidate.external_id, candidate.source_system) != (lot.external_id, lot.source_system):
+        raise ValueError("Detail enrichment changed the exact source identity")
+    raw = dict(candidate.raw_data or {})
+    raw["detail_enrichment_version"] = connector.detail_enrichment_version
+    raw["detail_fetched_at"] = datetime.now(timezone.utc).isoformat()
+    candidate.raw_data = raw
+    for field in fields(candidate):
+        setattr(lot, field.name, getattr(candidate, field.name))
 
 # Changes to a trusted source revision affect freshness, not necessarily the
 # actual business content. These raw fields are deliberately not used as the

@@ -335,7 +335,7 @@ def map_delivery_reconciliation_report(
     from bankrotai.services.map_dataset_version import MAP_DATASET_REVISION
     from bankrotai.services.map_object_store import _verify_public_manifest
     from bankrotai.services.map_payload import ENDED_STATUSES
-    from bankrotai.services.map_property_eligibility import map_property_eligible, map_property_evidence_columns
+    from bankrotai.services.map_property_eligibility import map_property_eligible, map_property_evidence_columns, map_source_join_condition
 
     current_rows = session.scalars(
         select(MapDataset).where(MapDataset.is_current.is_(True))
@@ -381,7 +381,7 @@ def map_delivery_reconciliation_report(
             ProcessedLot.current_geo_lon,
             ProcessedLot.current_geo_observed_at,
             ProcessedLot.last_update,
-        ).select_from(ProcessedLot).outerjoin(SourceLot, SourceLot.processed_lot_id == ProcessedLot.id).where(
+        ).select_from(ProcessedLot).outerjoin(SourceLot, map_source_join_condition()).where(
             ProcessedLot.duplicate_of_id.is_(None),
             ProcessedLot.is_archived.is_(False),
             ProcessedLot.auction_status.notin_(tuple(ENDED_STATUSES)),
@@ -458,7 +458,7 @@ def map_delivery_reconciliation_report(
     pending_missing_set = set(pending_missing_ids)
     missing_ids = [lot_id for lot_id in live_missing_ids if lot_id not in pending_missing_set]
 
-    extra_change_times: dict[int, tuple[datetime | None, datetime | None, datetime | None]] = {}
+    extra_change_times: dict[int, tuple[datetime | None, ...]] = {}
     if live_extra_ids:
         for row in session.execute(
             select(
@@ -466,12 +466,20 @@ def map_delivery_reconciliation_report(
                 ProcessedLot.current_geo_observed_at,
                 ProcessedLot.last_update,
                 ProcessedLot.archived_at,
-            ).where(ProcessedLot.id.in_(live_extra_ids))
+                SourceLot.raw_data["source_sale_eligibility"].as_boolean().label("source_sale_eligible"),
+                SourceLot.raw_data["source_sale_eligibility_evidence"]["checked_at_utc"].as_string().label("eligibility_changed_at"),
+            ).select_from(ProcessedLot).outerjoin(SourceLot, map_source_join_condition()).where(ProcessedLot.id.in_(live_extra_ids))
         ).all():
+            try:
+                eligibility_changed = (datetime.fromisoformat(str(row.eligibility_changed_at).replace("Z", "+00:00"))
+                                       if row.source_sale_eligible is False else None)
+            except ValueError:
+                eligibility_changed = None
             extra_change_times[int(row.id)] = (
                 row.current_geo_observed_at,
                 row.last_update,
                 row.archived_at,
+                eligibility_changed,
             )
     pending_extra_ids = [
         lot_id

@@ -1220,7 +1220,9 @@ class TorgiGovClient:
             cadastral_number=cadastral_numbers[0] if cadastral_numbers else None,
         )
         start_price = self._pick_price(payload, "priceMin", "initialPrice", "startPrice", "price", "lotPrice")
-        current_price = self._pick_price(payload, "currentPrice", "priceFin", "finalPrice", "actualPrice") or start_price
+        current_price = self._pick_price(payload, "currentPrice", "priceFin", "finalPrice", "actualPrice")
+        if current_price is None:
+            current_price = start_price
         raw_status = self._clean_text(self._pick(
             payload,
             "lotStatus", "status", "statusCode", "lotStatusName", "statusName", "state",

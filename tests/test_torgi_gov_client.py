@@ -628,3 +628,9 @@ def test_official_success_and_suspended_stages_do_not_remain_active_or_unknown()
     assert client._normalize_status("APPLICATIONS_SUBMISSION") == "active"
     assert client._normalize_status("DETERMINING_WINNER") == "scheduled"
     assert client._normalize_status("UNDOCUMENTED_NEW_STAGE") == "unknown"
+
+
+def test_explicit_zero_current_price_is_not_replaced_by_initial_price():
+    lot = TorgiGovClient()._normalize_api_lot({"id": "123456789_1", "lotName": "Земельный участок",
+                                             "priceMin": 100000, "currentPrice": 0})
+    assert lot.start_price == 100000 and lot.current_price == 0

@@ -35,7 +35,8 @@ from bankrotai.scrapers import (
     LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot,
 )
 from bankrotai.services.trusted_time import trusted_utc_now
-from bankrotai.services.detail_freshness import cached_detail_expired, reuse_detail_evidence
+from bankrotai.services.detail_freshness import cached_detail_expired, reuse_detail_evidence, refresh_detail_evidence
+from bankrotai.services.source_eligibility_evidence import persist_exclusions, clear_exclusion, observe_rejection, partition_sale_lots
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
@@ -57,7 +58,6 @@ REPEATABLE_COVERAGE_COLLAPSE_SOURCES = frozenset({"torgi-russia.ru"})
 COVERAGE_COLLAPSE_CONFIRMATION_RUNS = 1
 COVERAGE_COLLAPSE_STABILITY_TOLERANCE = 0.05
 EXPIRY_SCAN_BATCH_SIZE = 500
-
 def default_source_specs() -> tuple[SourceSyncSpec, ...]:
     from bankrotai.services.ingestion_spec_builders import core_source_specs
     from bankrotai.services.etp_incremental_specs import scheduled_etp_source_specs
@@ -73,7 +73,6 @@ def fast_source_specs(*, gis_publish_date_from: str) -> tuple[SourceSyncSpec, ..
             filters = replace(filters, publish_date_from=gis_publish_date_from)
         specs.append(replace(spec, filters=filters, reconcile_missing=False, max_batches=1, require_source_end=False))
     return tuple(specs)
-
 
 def source_full_specs(source_id: str) -> tuple[SourceSyncSpec, ...]:
     from bankrotai.services.operator_source_specs import operator_source_full_specs
@@ -448,6 +447,8 @@ class NationwideIngestionService:
                     run_id, result, page.items, connector=connector,
                     max_detail_attempts_per_page=spec.max_detail_attempts_per_page,
                 )
+                if result.items_failed:
+                    raise RuntimeError("source detail enrichment failed: " + (result.error or "unverified records"))
                 enforce_source_quarantine_limit(result)
                 result.elapsed_seconds = time.perf_counter() - wall_started
                 update_eta(result)
@@ -664,6 +665,8 @@ class NationwideIngestionService:
         from bankrotai.services.source_lot_exclusions import excluded_ids
         with self.session_factory() as lookup_session:
             excluded = excluded_ids(lookup_session, result.source_system, [lot.external_id for lot in normalized_lots])
+        evidence_lots = [lot for lot in normalized_lots if lot.external_id not in excluded]
+        persist_exclusions(self.session_factory, result.source_system, evidence_lots, run_id)
         for lot in normalized_lots:
             if lot.external_id in excluded:
                 if lot.external_id not in result.seen_external_ids:
@@ -672,6 +675,7 @@ class NationwideIngestionService:
                     result.seen_external_ids.add(lot.external_id)
                 continue
             if not is_sale_real_estate_lot(lot):
+                observe_rejection(result, lot.external_id)
                 continue
             if result.source_system == "nistp.ru" and not catalogue_row_eligible_for_detail(lot):
                 continue
@@ -694,6 +698,7 @@ class NationwideIngestionService:
                     ).all()
                 }
             enrichment_limit = asyncio.Semaphore(4)
+            provider_refused = asyncio.Event()
 
             async def enrich_if_needed(lot: Any) -> None:
                 existing = existing_lot_online.get(lot.external_id)
@@ -720,18 +725,20 @@ class NationwideIngestionService:
                 )
                 if needs_detail:
                     try:
-                        async with enrichment_limit:
-                            await connector.enrich_lot(lot)
-                        enriched_raw = lot.raw_data if isinstance(lot.raw_data, dict) else {}
-                        enriched_raw["detail_enrichment_version"] = connector.detail_enrichment_version
-                        enriched_raw["detail_fetched_at"] = datetime.utcnow().isoformat() + "Z"
-                        lot.raw_data = enriched_raw
+                        await refresh_detail_evidence(lot, connector, enrichment_limit, provider_refused)
                     except Exception as exc:
                         logger.warning(
                             "%s detail enrichment failed for %s: %s", result.source_system, lot.external_id, exc
                         )
                         current_raw["detail_enrichment_status"] = "failed"
+                        if getattr(getattr(exc, "response", None), "status_code", None) in {401, 403, 429}:
+                            provider_refused.set()
+                        if result.source_system != "nistp.ru" or not isinstance(exc, ValueError):
+                            result.items_failed += 1
+                            result.error = result.error or f"{type(exc).__name__}: {str(exc)[:300]}"
                         lot.raw_data = current_raw
+                        if existing is not None:
+                            reuse_detail_evidence(lot, existing, previous_raw, current_raw)
                     return
                 assert existing is not None
                 reuse_detail_evidence(lot, existing, previous_raw, current_raw)
@@ -742,9 +749,10 @@ class NationwideIngestionService:
             )
         # Detail enrichment can reveal that a catalogue's generic "real_estate"
         # label was wrong. Apply the same contract again before either writer.
-        sale_eligible = [lot for lot in accepted if is_sale_real_estate_lot(lot)]
-        result.items_rejected += len(accepted) - len(sale_eligible)
-        accepted = sale_eligible
+        accepted = partition_sale_lots(result, accepted)
+        persist_exclusions(self.session_factory, result.source_system, evidence_lots, run_id)
+        for lot in accepted:
+            clear_exclusion(lot)
         if result.source_system == "nistp.ru":
             proven = [lot for lot in accepted if independent_detail_proven(lot)]
             # A catalogue row that cannot be independently proven by its

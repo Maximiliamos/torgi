@@ -61,6 +61,36 @@ def test_reconciliation_uses_publication_property_rules_without_waiving_extras(i
         assert result["ok"] is not include_invalid
 
 
+@pytest.mark.parametrize("recent", [False, True])
+def test_source_only_exclusion_uses_decision_age_not_last_seen_time(recent):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = utc_now().replace(tzinfo=None)
+    with Session(engine) as session:
+        lot = _mapped_lot("source-only-exclusion")
+        lot.last_update = now - timedelta(hours=3)
+        canonical = CanonicalLot(canonical_key="source-only", title=lot.title)
+        session.add_all([lot, canonical])
+        session.flush()
+        checked = now if recent else now - timedelta(hours=2)
+        session.add(SourceLot(source_system=lot.source_system, external_id=lot.external_id,
+                              canonical_lot_id=canonical.id, processed_lot_id=None, last_seen_at=now,
+                              raw_data={"source_sale_eligibility": False,
+                                        "source_sale_eligibility_evidence": {"checked_at_utc": checked.isoformat()}}))
+        dataset = MapDataset(version="source-only", is_current=True, status="ready", point_count=1, tile_count=1,
+                             created_at=now - timedelta(hours=1), published_at=now)
+        session.add(dataset)
+        session.flush()
+        session.add(MapTile(dataset_id=dataset.id, z=12, x=0, y=0, feature_count=1, etag="a" * 64,
+                            payload_json={"features": [{"kind": "lot", "id": lot.id}]}))
+        session.commit()
+        report = map_delivery_reconciliation_report(session)
+        assert report["property_rejected_count"] == 1
+        assert report["pending_post_dataset_extra_count"] == int(recent)
+        assert report["extra_in_dataset_count"] == int(not recent)
+        assert report["ok"] is recent
+
+
 def test_map_delivery_reconciliation_matches_db_and_dataset() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

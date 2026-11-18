@@ -12,6 +12,7 @@ from bankrotai.services.map_property_eligibility import map_property_eligible
     {"category": "land", "title": "Земельный участок", "auction_type": "Аренда"},
     {"category": "land", "title": "Земельный участок", "official_transaction": "RENT"},
     {"category": "land", "title": "Земельный участок", "official_transaction": '{"code":"RENT"}'},
+    {"category": "apartment", "title": "Старая карточка квартиры", "source_sale_eligible": False},
 ])
 def test_legacy_nonproperty_projections_cannot_bypass_ingestion_filter(values):
     assert not map_property_eligible(values)
