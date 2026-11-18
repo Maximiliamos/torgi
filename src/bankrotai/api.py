@@ -1425,7 +1425,10 @@ def get_lot(lot_id: int, city_slug: str = DEFAULT_REGION):
 def get_lot_procedure(lot_id: int):
     from bankrotai.services.source_auction_facts import source_auction_date, unverified_auction_fields
     with read_session_scope() as session:
-        source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
+        source_lot = session.scalar(select(SourceLot).join(ProcessedLot,
+            (SourceLot.source_system == ProcessedLot.source_system)
+            & (SourceLot.external_id == ProcessedLot.external_id)
+        ).where(ProcessedLot.id == lot_id))
         if source_lot is None:
             raise HTTPException(status_code=404, detail="Source lot not found")
         return {

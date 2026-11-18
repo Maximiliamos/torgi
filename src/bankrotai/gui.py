@@ -5693,7 +5693,7 @@ class MainWindow(QMainWindow):
             )
             torgi_russia_url = torgi_russia_url or raw_data.get("torgi_russia_url")
         auction_at = source_auction_date(primary_source, "auction_at")
-        auction_now = to_moscow_datetime(datetime.now(timezone.utc))
+        auction_now = datetime.now(ZoneInfo("Europe/Moscow")).replace(tzinfo=None)
         ended_statuses = {"closed", "completed", "cancelled", "canceled", "failed", "annulled", "archive"}
         is_ended = bool(
             lot.is_archived
