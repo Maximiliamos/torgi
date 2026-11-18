@@ -1,14 +1,14 @@
 """Read-only aggregate model for the Reliability dashboard."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 import os
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from bankrotai.db import ProcessedLot, SourceLot, utc_now
+from bankrotai.db import AppSetting, ProcessedLot, utc_now
 from bankrotai.services.geo_backfill import geocoding_progress
 from bankrotai.services.operations_status import operations_host_status
 from bankrotai.services.quality import (
@@ -74,7 +74,13 @@ def reliability_sources(session: Session) -> dict[str, Any]:
 
     configured = {spec.source_id for spec in default_source_specs()}
     registered = set(connector_registry.source_ids())
-    paused = set(paused_source_systems(session))
+    paused = {
+        str(row.key).removeprefix("source_paused:")
+        for row in session.scalars(
+            select(AppSetting).where(AppSetting.key.like("source_paused:%"))
+        ).all()
+        if str(row.value or "").strip().casefold() in {"1", "true", "yes", "on"}
+    }
 
     grouped: dict[str, list[Any]] = {}
     aliases: dict[str, set[str]] = {}
