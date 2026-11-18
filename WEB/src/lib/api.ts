@@ -197,6 +197,7 @@ export type MapLot = {
   procedure_number: string | null;
   application_deadline: string | null;
   auction_at: string | null;
+  unverified_auction_fields?: string[];
   sources: Array<{
     processed_lot_id: number;
     source_system: string;

@@ -31,6 +31,9 @@ class LotOnlineConnector(AuctionConnector):
                                          expected_external_id=lot.external_id)
         raw = dict(lot.raw_data or {})
         raw.update(json_safe_value(detail))
+        raw["detail_observed_fields"] = [name for name in (
+            "address", "description", "application_start_at", "application_deadline", "auction_at"
+        ) if detail.get(name) not in (None, "")]
         raw["detail_enrichment_status"] = "success"
         raw["detail_enrichment_version"] = self.detail_enrichment_version
         lot.raw_data = raw

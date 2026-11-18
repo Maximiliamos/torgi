@@ -1423,6 +1423,7 @@ def get_lot(lot_id: int, city_slug: str = DEFAULT_REGION):
 
 @app.get("/api/lots/{lot_id}/procedure")
 def get_lot_procedure(lot_id: int):
+    from bankrotai.services.source_auction_facts import source_auction_date, unverified_auction_fields
     with read_session_scope() as session:
         source_lot = session.scalar(select(SourceLot).where(SourceLot.processed_lot_id == lot_id))
         if source_lot is None:
@@ -1440,9 +1441,10 @@ def get_lot_procedure(lot_id: int):
             "deposit_amount": float(source_lot.deposit_amount) if source_lot.deposit_amount is not None else None,
             "deposit_percent": source_lot.deposit_percent,
             "deposit_deadline": source_lot.deposit_deadline,
-            "application_start_at": source_lot.application_start_at,
-            "application_deadline": source_lot.application_deadline,
-            "auction_at": source_lot.auction_at,
+            "application_start_at": source_auction_date(source_lot, "application_start_at"),
+            "application_deadline": source_auction_date(source_lot, "application_deadline"),
+            "auction_at": source_auction_date(source_lot, "auction_at"),
+            "unverified_auction_fields": unverified_auction_fields(source_lot),
             "auction_timezone": source_lot.auction_timezone,
             "auction_step_amount": (
                 float(source_lot.auction_step_amount) if source_lot.auction_step_amount is not None else None

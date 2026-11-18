@@ -78,10 +78,12 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
                     external_id="primary",
                     source_url="https://example.test/tbankrot",
                     application_deadline=datetime(2026, 8, 23, 19, 30),
+                    auction_at=datetime(2026, 8, 25, 10),
+                    procedure_number="own-auction",
                     current_price=Decimal("1000000"),
                     next_interval_price=Decimal("950000"),
                     next_price_reduction_at=datetime(2026, 8, 24, 10, 0),
-                    raw_data={"minimum_price": 500000},
+                    raw_data={"minimum_price": 500000, "image_urls": ["https://example.test/own.jpg"]},
                     last_seen_at=datetime(2026, 8, 22, 12, 0),
                 ),
                 SourceLot(
@@ -90,6 +92,10 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
                     source_system="torgi.gov.ru",
                     external_id="duplicate",
                     source_url="https://example.test/gis",
+                    application_deadline=datetime(2030, 1, 1),
+                    auction_at=datetime(2030, 1, 2),
+                    procedure_number="different-auction",
+                    raw_data={"image_urls": ["https://example.test/other.jpg"]},
                 ),
                 LotGeoSnapshot(
                     lot_id=primary.id,
@@ -117,11 +123,32 @@ def test_map_payload_lists_every_publication_merged_into_primary_lot() -> None:
         "https://example.test/tbankrot",
         "https://example.test/gis",
     ]
-    assert detail["application_deadline"] == "2026-08-23T19:30:00Z"
+    assert detail["application_deadline"] == "2026-08-23T19:30:00+03:00"
+    assert detail["auction_at"] == "2026-08-25T10:00:00+03:00"
+    assert detail["procedure_number"] == "own-auction"
+    assert detail["image_urls"] == ["https://example.test/own.jpg"]
+    assert detail["gis_torgi_url"] is None
     assert detail["minimum_price"] == 500000
     assert detail["price_observed_at"] == "2026-08-22T12:00:00Z"
     assert detail["next_interval_price"] == 950000
-    assert detail["next_price_reduction_at"] == "2026-08-24T10:00:00Z"
+    assert detail["next_price_reduction_at"] == "2026-08-24T10:00:00+03:00"
+
+
+def test_missing_exact_source_does_not_borrow_another_publication_facts():
+    from bankrotai.services.map_view import _map_lot_payload
+    lot = ProcessedLot(id=1, external_id="own", source_system="own.ru", source="own", title="Участок",
+                       description="", category="land", source_url="https://own.ru/1")
+    other = ProcessedLot(id=2, external_id="other", source_system="other.ru", title="Другие торги")
+    source = SourceLot(external_id="other", source_system="other.ru", source_url="https://other.ru/2",
+                       application_deadline=datetime(2030, 1, 1), auction_at=datetime(2030, 1, 2),
+                       procedure_number="other-procedure", raw_data={"minimum_price": 500, "image_urls": ["https://other.ru/photo.jpg"]})
+    geo = LotGeoSnapshot(centroid_lat=57, centroid_lon=39)
+    detail = _map_lot_payload(lot, geo, [(other, source)])
+    assert detail["application_deadline"] is detail["auction_at"] is detail["procedure_number"] is None
+    assert detail["minimum_price"] is None
+    assert detail["image_urls"] == []
+    assert detail["source_url"] == "https://own.ru/1"
+    assert len(detail["sources"]) == 1
 
 
 def test_map_detail_displays_initial_price_when_current_price_is_not_published() -> None:
