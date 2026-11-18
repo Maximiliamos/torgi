@@ -42,12 +42,18 @@ try {
     foreach ($group in $groups) {
         $relative = "$Folder/$($group.Name)"
         $inputs = @(Get-ChildItem -LiteralPath $group.FullName -Filter 'input-*-evidence.json' | ForEach-Object { "$relative/$($_.Name)" })
-        & (Join-Path $root 'scripts/partition-verified-repair-evidence.ps1') -EvidenceFiles $inputs -Prefix "$relative/safe" | Out-Null
-        foreach ($file in Get-ChildItem -LiteralPath $group.FullName -Filter 'safe-*-evidence.json' | Sort-Object Name) {
+        if (-not @(Get-ChildItem -LiteralPath $group.FullName -Filter 'safe-v2-*-evidence.json').Count) {
+            & (Join-Path $root 'scripts/partition-verified-repair-evidence.ps1') -EvidenceFiles $inputs -Prefix "$relative/safe-v2" | Out-Null
+        }
+        foreach ($file in Get-ChildItem -LiteralPath $group.FullName -Filter 'safe-v2-*-evidence.json' | Sort-Object Name) {
             $prefix = "$relative/" + ($file.Name -replace '-evidence.json$', '')
             $resultPath = Join-Path $root "$prefix-result.json"
-            if ((Test-Path -LiteralPath $resultPath) -and
-                (Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json).committed) { continue }
+            if (Test-Path -LiteralPath $resultPath) {
+                $previous = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+                $currentSha = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+                if ($previous.committed -and $previous.evidence_file_sha256 -eq $currentSha) { continue }
+                throw 'Existing batch result does not match its immutable evidence file'
+            }
             & (Join-Path $root 'scripts/apply-verified-source-repair.ps1') -Evidence "$prefix-evidence.json" -Output "$prefix-preview.json" | Out-Null
             & (Join-Path $root 'scripts/apply-verified-source-repair.ps1') -Apply -ValidateTransaction -Evidence "$prefix-evidence.json" -Plan "$prefix-preview.json" -Output "$prefix-trial.json" -MaintenanceRunId $run.run_id | Out-Null
             & (Join-Path $root 'scripts/apply-verified-source-repair.ps1') -Apply -Evidence "$prefix-evidence.json" -Plan "$prefix-preview.json" -Output "$prefix-result.json" -BackupMetadata $BackupMetadata -MaintenanceRunId $run.run_id | Out-Null
