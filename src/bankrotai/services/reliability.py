@@ -247,11 +247,14 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         "current_dataset_count": int(operational.get("current_dataset_count") or 0),
         "tile_count_mismatches": int(operational.get("tile_count_mismatches") or 0),
     }
-    critical = not bool(map_report.get("ok")) or (
+    manifest = map_report.get("manifest") or {}
+    manifest_problem = manifest.get("checked") is True and manifest.get("ok") is not True
+    critical = (
         integrity["current_dataset_count"] != 1
         or integrity["tile_count_mismatches"] > 0
         or bool(map_report.get("missing_from_dataset_count"))
         or bool(map_report.get("extra_in_dataset_count"))
+        or (map_report.get("dataset") or {}).get("status") != "ready"
     )
     warning_count = sum(
         value > 0
@@ -273,6 +276,8 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         reasons.append("Недостаточно свободного места на диске")
     if critical:
         reasons.append("Нарушена целостность карты или набора данных")
+    elif manifest_problem:
+        reasons.append("Публичная доставка карты не подтверждена")
 
     incident = critical or host.get("backup_healthy") is False or (
         isinstance(disk_free, (int, float)) and disk_free < 15
