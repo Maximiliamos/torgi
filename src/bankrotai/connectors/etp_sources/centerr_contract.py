@@ -20,6 +20,16 @@ from bankrotai.domain import NormalizedLot
 from bankrotai.services.property_address_evidence import extract_asset_property_address
 
 
+def _parse_soup(html: str | bytes) -> BeautifulSoup:
+    if isinstance(html, bytes):
+        try:
+            html = html.decode('utf-8-sig')
+        except UnicodeDecodeError:
+            # Keep legacy source encoding detection for non-UTF-8 documents.
+            pass
+    return BeautifulSoup(html, 'html.parser')
+
+
 BASE_URL = "https://bankrupt.centerr.ru/public/purchases-all/"
 HOST = "bankrupt.centerr.ru"
 LOT_PATH_RE = re.compile(
@@ -186,7 +196,7 @@ def parse_next_page_postback(
     """
     if next_page < 2:
         raise ValueError("CenterR next_page must be >= 2")
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _parse_soup(html)
     candidates: list[tuple[str, str, str]] = []
     for anchor in soup.select("a[href]"):
         href = str(anchor.get("href") or "")
@@ -254,7 +264,7 @@ def verify_identity(
 
 
 def parse_catalogue_lots(html: str | bytes) -> list[CenterRCatalogueLot]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _parse_soup(html)
     result: list[CenterRCatalogueLot] = []
     by_external_id: dict[str, CenterRCatalogueLot] = {}
 
@@ -321,7 +331,7 @@ def parse_catalogue_lots(html: str | bytes) -> list[CenterRCatalogueLot]:
 
 def parse_detail_facts(html: str | bytes, *, detail_url: str) -> CenterRDetailFacts:
     sale_type, provider_lot_id, external_id = _identity_from_url(detail_url)
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _parse_soup(html)
     text = _clean(soup.get_text(" ", strip=True))
     if len(text) < 120:
         raise CenterRContractError("CenterR detail page has insufficient content")
