@@ -50,7 +50,7 @@ jobs:
           $previousPreference = $ErrorActionPreference
           $ErrorActionPreference = 'Continue'
           try {
-            $output = @(& docker.exe exec bankrotai-home-ingestion-worker python -c $python 2>&1)
+            $output = @($python | & docker.exe exec -i bankrotai-home-ingestion-worker python - 2>&1)
             $status = $LASTEXITCODE
           } finally {
             $ErrorActionPreference = $previousPreference
