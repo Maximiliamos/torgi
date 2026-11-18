@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime
 import os
+import threading
+import time
 from typing import Any
 
 from sqlalchemy import func, select
@@ -40,6 +42,29 @@ _SOURCE_DISPLAY_RU = {
     "sberbank-ast.ru": "Сбербанк-АСТ",
     "vertrades.ru": "Vertrades",
 }
+
+
+_HEAVY_CACHE_LOCK = threading.Lock()
+_HEAVY_CACHE_TTL_SECONDS = 300.0
+_HEAVY_CACHE: dict[str, Any] = {"at": 0.0, "operational": None, "map": None}
+
+
+def _heavy_quality_bundle(session: Session) -> tuple[dict[str, Any], dict[str, Any]]:
+    now = time.monotonic()
+    with _HEAVY_CACHE_LOCK:
+        age = now - float(_HEAVY_CACHE.get("at") or 0.0)
+        operational = _HEAVY_CACHE.get("operational")
+        map_report = _HEAVY_CACHE.get("map")
+        if age < _HEAVY_CACHE_TTL_SECONDS and isinstance(operational, dict) and isinstance(map_report, dict):
+            return operational, map_report
+        operational = operational_quality_report(session, stale_days=7, problem_limit=10)
+        map_report = map_delivery_reconciliation_report(
+            session,
+            verify_public_manifest=True,
+            problem_limit=10,
+        )
+        _HEAVY_CACHE.update({"at": now, "operational": operational, "map": map_report})
+        return operational, map_report
 
 
 def _canonical_source(value: str) -> str:
@@ -215,12 +240,7 @@ def reliability_summary(session: Session) -> dict[str, Any]:
     sources = reliability_sources(session)
     geo = geocoding_progress(session)
     host = operations_host_status(session)
-    operational = operational_quality_report(session, stale_days=7, problem_limit=10)
-    map_report = map_delivery_reconciliation_report(
-        session,
-        verify_public_manifest=False,
-        problem_limit=10,
-    )
+    operational, map_report = _heavy_quality_bundle(session)
     current_quality = _current_quality(session)
 
     integrity = {
@@ -229,7 +249,7 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         "current_dataset_count": int(operational.get("current_dataset_count") or 0),
         "tile_count_mismatches": int(operational.get("tile_count_mismatches") or 0),
     }
-    critical = (
+    critical = not bool(map_report.get("ok")) or (
         integrity["current_dataset_count"] != 1
         or integrity["tile_count_mismatches"] > 0
         or bool(map_report.get("missing_from_dataset_count"))
