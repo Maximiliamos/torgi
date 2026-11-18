@@ -8,6 +8,26 @@ from __future__ import annotations
 import re
 
 
+def is_region_only_address(value: str | None) -> bool:
+    """A subject/country label cannot identify the property's map point."""
+    from bankrotai.regions import normalize_region_code
+
+    if not value or not value.strip():
+        return False
+    found_region = False
+    for part in re.split(r"[,;]+", value):
+        part = " ".join(part.strip().casefold().split())
+        if not part or part in {"россия", "рф", "российская федерация", "russia"}:
+            continue
+        # Source cards also put the subject type before its name.
+        part = re.sub(r"^(?:обл\.?|область)\s+(.+)$", r"\1 область", part)
+        part = re.sub(r"^край\s+(.+)$", r"\1 край", part)
+        if normalize_region_code(part) is None:
+            return False
+        found_region = True
+    return found_region
+
+
 def build_geocoding_address_candidates(
     address: str | None,
     *,
