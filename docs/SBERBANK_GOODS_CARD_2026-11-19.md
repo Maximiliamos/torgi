@@ -35,3 +35,18 @@ identity/scope/purchase failures, recommendations, shell rejection, missing
 own fields, read-only POST shape and lease exclusion. Whole-database source
 repair, production deployment, two three-source passes and final pipeline
 acceptance are separate operations, not certified by these tests.
+
+The existing-cohort audit checked all 114 source identities. Initial prices
+were present for 114 and current prices for 113; 18 native status labels stay
+unknown in the canonical status mapping. This is field-scoped evidence,
+not a claim that every field is verified.
+
+Four industrial-line titles contained «линия концевого участка»: the shared
+classifier had mistaken the industrial section for a land plot. Recognize
+an industrial line as equipment when it precedes a property noun, preserving
+buildings sold with equipment. Remove the generic «участ» substring from
+fallback property terms so participation boilerplate cannot prove land;
+a primary «Участок № ...» title still qualifies. These checks also reject
+an industrial line carrying a stale property category in an older record.
+
+Expanded validation: 160 source/classification/filter/map tests passed.

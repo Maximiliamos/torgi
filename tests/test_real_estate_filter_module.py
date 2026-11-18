@@ -36,6 +36,15 @@ def test_filter_falls_back_to_source_category_metadata() -> None:
     assert not scrapers.is_real_estate_lot(lot(category="other", title="автомобиль", raw_data={}))
 
 
+def test_participation_terms_do_not_make_an_unknown_item_land():
+    assert not scrapers.is_real_estate_lot(lot(category="other",title="Лот 1",description="Участник торгов подает заявку на участие"))
+    assert scrapers.is_real_estate_lot(lot(category="other",title="Участок № 1"))
+
+
+def test_industrial_section_is_not_a_land_plot_even_with_old_property_category():
+    assert not scrapers.is_real_estate_lot(lot(category="land",title="ЖБЦ пл. № 2 Линия концевого участка № 2 СПР-20"))
+
+
 def test_receivable_secured_by_property_is_not_the_sale_of_that_property() -> None:
     claim = lot(category="receivables", title="Право требования по ДДУ на квартиру",
                 description="Земельный участок, кадастровый номер 76:17:204401:372")
