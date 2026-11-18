@@ -1,10 +1,21 @@
 """Keep repair provenance through ordinary source refreshes."""
 from copy import deepcopy
 from datetime import timezone
+from datetime import datetime
+from decimal import Decimal
 
 
 _KEYS = ("verified_source_fields", "repair_observed_fields", "repair_evidence_sha256",
          "repair_evidence_checked_at", "ingestion_observed_at", "ingestion_run_id")
+
+
+def verification_value(value):
+    """Bind field provenance to its stored value, independently of row refreshes."""
+    if isinstance(value, Decimal):
+        return str(value.normalize())
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
 
 
 def preserve_verification_metadata(incoming, previous):

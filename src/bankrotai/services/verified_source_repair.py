@@ -10,6 +10,7 @@ from bankrotai.db import LotSyncRun, SourceLot
 from bankrotai.services.asset_category import classify_category
 from bankrotai.services.reported_lot_repair import SOURCE_FIELDS, _repair_exact_lots
 from bankrotai.services.source_lot_exclusions import SourceLotExcludedError, excluded_ids
+from bankrotai.services.source_verification_metadata import verification_value
 
 
 # Logical connector IDs can differ from their current public host. Keep aliases
@@ -126,5 +127,9 @@ def repair_verified_source_lots(
                 verified = dict(previous_verifications[item["lot_id"]])
                 verified.update({name: {"sha256": proof["sha256"], "checked_at_utc": proof["checked_at_utc"]}
                                  for name in lot["raw_data"]["repair_observed_fields"]})
+                for name in lot["raw_data"]["repair_observed_fields"]:
+                    field = "source_status" if name == "auction_status" else name
+                    if hasattr(source_row, field):
+                        verified[name]["value"] = verification_value(getattr(source_row, field))
                 source_row.raw_data = {**source_row.raw_data, "verified_source_fields": verified}
     return result

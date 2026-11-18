@@ -11,7 +11,7 @@ from bankrotai.services.map_source_filters import source_match_condition
 from bankrotai.services.map_payload import ENDED_STATUSES
 from bankrotai.core import get_region_query_values
 from bankrotai.db import LotGeoSnapshot, ProcessedLot, SourceLot
-from bankrotai.services.source_auction_facts import business_datetime_iso, source_auction_date, trusted_preview_raw, unverified_auction_fields
+from bankrotai.services.source_auction_facts import business_datetime_iso, source_auction_date, source_price_checked_at, trusted_preview_raw, unverified_auction_fields
 from bankrotai.services.map_geo_projection import current_map_geo
 
 
@@ -99,7 +99,8 @@ def _map_lot_payload(
         russia_url = russia_url or raw.get("torgi_russia_url")
 
     auction_at = source_auction_date(primary, "auction_at")
-    price_observed_at = primary.last_seen_at if primary else None
+    price_field = "current_price" if lot.current_price is not None else "start_price"
+    price_observed_at = source_price_checked_at(primary, price_field, getattr(lot, price_field))
     primary_raw = primary.raw_data if primary and isinstance(primary.raw_data, dict) else {}
     minimum_price = primary_raw.get("minimum_price")
     publications = [

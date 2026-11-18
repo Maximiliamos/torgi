@@ -1,10 +1,28 @@
 """Auction dates belong to an exact publication, not to its shared asset."""
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 
 from bankrotai.business_time import MOSCOW, to_moscow_datetime
+from bankrotai.services.source_verification_metadata import verification_value
 
 AUCTION_DATE_FIELDS = ("application_start_at", "application_deadline", "auction_at")
+
+
+def source_price_checked_at(source, field, displayed_value):
+    """A date/status refresh is not a new independent price observation."""
+    if source is None or field not in {"start_price", "current_price"} or displayed_value is None:
+        return None
+    raw = source.raw_data if isinstance(source.raw_data, dict) else {}
+    proof = (raw.get("verified_source_fields") or {}).get(field) or {}
+    if (not re.fullmatch(r"[a-f0-9]{64}", str(proof.get("sha256", "")))
+            or "value" not in proof or proof["value"] != verification_value(getattr(source, field))
+            or proof["value"] != verification_value(displayed_value)):
+        return None
+    try:
+        checked = datetime.fromisoformat(proof.get("checked_at_utc", ""))
+    except (TypeError, ValueError):
+        return None
+    return checked.astimezone(timezone.utc) if checked.tzinfo is not None else None
 
 
 def _scoped_identity(source, raw, minimum_version):

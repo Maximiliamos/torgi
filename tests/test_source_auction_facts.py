@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
 
 from bankrotai.db import SourceLot
 from bankrotai.services.source_auction_facts import business_datetime_iso, source_auction_date, trusted_preview_raw, unverified_auction_fields
+from bankrotai.services.source_auction_facts import source_price_checked_at
 
 
 @pytest.mark.parametrize("proof_kind", ["legacy", "scoped", "receipt", "wrong_identity"])
@@ -46,3 +48,25 @@ def test_russia_recommendation_metadata_requires_current_exact_detail_identity(v
     assert source_auction_date(source, "application_deadline") == (original if version == 7 else None)
     assert bool(trusted_preview_raw(source)) == (version == 7)
     assert source.raw_data["image_urls"] == ["https://example.test/one.jpg"]
+
+
+def test_date_only_refresh_does_not_make_the_old_price_newly_verified():
+    source = SourceLot(source_system='torgi.gov.ru',current_price=Decimal('100'),
+        last_seen_at=datetime(2026,11,19),raw_data={'verified_source_fields':{
+            'current_price':{'sha256':'a'*64,'checked_at_utc':'2026-11-18T12:00:00+00:00','value':'1E+2'},
+            'auction_at':{'sha256':'b'*64,'checked_at_utc':'2026-11-19T00:00:00+00:00'}}})
+    assert source_price_checked_at(source,'current_price',Decimal('100')) == datetime(2026,11,18,12,tzinfo=timezone.utc)
+    source.current_price=Decimal('120')
+    assert source_price_checked_at(source,'current_price',Decimal('120')) is None
+
+
+@pytest.mark.parametrize('kind',['legacy_without_value','wrong_displayed_value','wrong_price_field'])
+def test_price_freshness_requires_a_value_bound_proof_for_the_displayed_field(kind):
+    proof={'sha256':'a'*64,'checked_at_utc':'2026-11-18T12:00:00+00:00','value':'1E+2'}
+    if kind=='legacy_without_value':
+        proof.pop('value')
+    source=SourceLot(source_system='torgi.gov.ru',current_price=Decimal('100'),
+        last_seen_at=datetime(2026,11,19),raw_data={'verified_source_fields':{'current_price':proof}})
+    field='start_price' if kind=='wrong_price_field' else 'current_price'
+    value=Decimal('120') if kind=='wrong_displayed_value' else Decimal('100')
+    assert source_price_checked_at(source,field,value) is None
