@@ -385,6 +385,8 @@ def _is_read_only_mvp_path(request: Request) -> bool:
             "/api/map/lots",
             "/api/map/sources",
             "/api/quality/geocoding",
+            "/api/quality/operational",
+            "/api/quality/map-delivery",
             "/api/map/datasets/current",
             "/api/map/review-statuses",
             "/api/cadastre/search",
