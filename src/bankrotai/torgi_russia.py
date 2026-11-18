@@ -78,9 +78,9 @@ class TorgiRussiaDetails:
             "address": self.address,
             "category": self.category,
             "auction_status": self.auction_status,
-            "application_start_at": self.application_start_at,
-            "application_deadline": self.application_deadline,
-            "auction_at": self.auction_at,
+            "application_start_at": self.application_start_at.isoformat() if self.application_start_at else None,
+            "application_deadline": self.application_deadline.isoformat() if self.application_deadline else None,
+            "auction_at": self.auction_at.isoformat() if self.auction_at else None,
         }
 
 

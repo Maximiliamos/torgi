@@ -138,6 +138,27 @@ def test_torgi_russia_lot_page_parses_current_lot_data_rows() -> None:
     assert result.auction_at.isoformat() == "2026-09-30T15:00:00"
 
 
+def test_torgi_russia_enrichment_keeps_raw_dates_json_serializable() -> None:
+    html = """
+    <dl>
+      <dt>Начало приема заявок</dt><dd>20.08.2026 в 09:00</dd>
+      <dt>Окончание приема заявок</dt><dd>25.08.2026 в 18:00</dd>
+      <dt>Дата проведения аукциона</dt><dd>27.08.2026 в 10:30</dd>
+    </dl>
+    """
+    connector = TorgiRussiaConnector()
+    lot = TorgiRussiaClient.parse_search_payload({"data": [_new_site_lot()]})[0]
+    with patch.object(connector.client, "fetch_lot_page", return_value=(html, lot.lot_url)):
+        enriched = asyncio.run(connector.enrich_lot(lot))
+    raw = json.loads(json.dumps(enriched.raw_data))
+    assert raw["application_start_at"] == "2026-08-20T09:00:00"
+    assert raw["application_deadline"] == "2026-08-25T18:00:00"
+    assert raw["auction_at"] == "2026-08-27T10:30:00"
+    assert enriched.application_start_at.isoformat() == raw["application_start_at"]
+    assert enriched.application_deadline.isoformat() == raw["application_deadline"]
+    assert enriched.auction_at.isoformat() == raw["auction_at"]
+
+
 def test_torgi_russia_parse_search_page() -> None:
     html = """
     <main><article class="card">
