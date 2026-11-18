@@ -5,6 +5,9 @@ from io import BytesIO
 from openpyxl import Workbook
 
 from bankrotai.scrapers import TorgiGovClient, TorgiGovSearchFilters
+from datetime import datetime
+from bankrotai.services.torgi_gov_normalization import apply_export_transaction_scope, parse_torgi_gov_date
+from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
 
 
 LAND_SEARCH = "\u0437\u0435\u043c\u0435\u043b\u044c\u043d\u044b\u0439 \u0443\u0447\u0430\u0441\u0442\u043e\u043a"
@@ -109,3 +112,28 @@ def test_torgi_gov_parses_excel_export() -> None:
     assert lots[0].cadastral_number == "55:36:000000:123"
     assert lots[0].raw_data["bidd_end_time"] == "15.05.2026 10:00 (\u041c\u0421\u041a)"
     assert lots[0].raw_data["deposit"] == 1000
+    assert lots[0].published_at is None
+    apply_export_transaction_scope(lots, "SALE")
+    assert is_sale_real_estate_lot(lots[0])
+    assert lots[0].application_start_at == datetime(2026, 5, 1, 10)
+    assert lots[0].application_deadline == datetime(2026, 5, 15, 10)
+    assert lots[0].auction_at == datetime(2026, 5, 17, 10)
+    assert lots[0].auction_timezone == "Europe/Moscow"
+    assert lots[0].deposit_amount == 1000
+    assert lots[0].notice_number == "21000000000000000001"
+
+
+def test_official_export_zone_labels_convert_to_moscow_without_guessing():
+    assert parse_torgi_gov_date("15.05.2026 10:00 (МСК+4)") == datetime(2026, 5, 15, 6)
+    assert parse_torgi_gov_date("15.05.2026 10:00 (МСК-1)") == datetime(2026, 5, 15, 11)
+    assert parse_torgi_gov_date("15.05.2026 10:00 (МСК)") == datetime(2026, 5, 15, 10)
+    assert parse_torgi_gov_date("15.05.2026 10:00 (МСК+99)") is None
+
+
+def test_actual_rental_contract_overrides_sale_request_scope():
+    lot = TorgiGovClient()._normalize_excel_row({"Номер извещения": "123456789", "Номер лота": 1,
+        "Предмет торгов": "Земельный участок", "Вид торгов": "Аренда и продажа земельных участков",
+        "Дополнительные атрибуты": "Вид договора: Договор аренды"})
+    apply_export_transaction_scope([lot], "SALE")
+    assert lot.raw_data["typeTransaction"] == "RENT"
+    assert not is_sale_real_estate_lot(lot)

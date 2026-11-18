@@ -275,6 +275,7 @@ def test_tbankrot_detail_extracts_deadline_and_auction_date() -> None:
 def test_tbankrot_enrichment_repairs_missing_detail_fields(monkeypatch) -> None:
     connector = TBankrotConnector()
     monkeypatch.setattr(connector.client, "fetch_detail_fields", lambda _url: {
+        "detail_identity_verified": True,
         "start_price": 3_500_000,
         "current_price": 3_342_780,
         "application_deadline": datetime(2026, 10, 20, 18, 0),
@@ -322,6 +323,7 @@ def test_tbankrot_enrichment_fetches_detail_when_only_auction_date_is_missing(mo
     calls = []
     monkeypatch.setattr(connector.client, "fetch_detail_fields", lambda url: (
         calls.append(url) or {
+            "detail_identity_verified": True,
             "start_price": 3_500_000,
             "current_price": 3_342_780,
             "application_deadline": datetime(2026, 10, 20, 18, 0),
@@ -360,7 +362,7 @@ def test_tbankrot_enrichment_fetches_detail_when_only_auction_date_is_missing(mo
     assert calls == ["https://tbankrot.ru/item?id=7896849"]
     assert enriched.auction_at == datetime(2026, 10, 23, 10, 0)
     assert enriched.start_price == 3_500_000
-    assert enriched.raw_data["detail_enrichment_version"] == 5
+    assert enriched.raw_data["detail_enrichment_version"] == 6
 
 
 def test_tbankrot_address_stops_before_encumbrance_metadata() -> None:
@@ -547,3 +549,12 @@ def test_tbankrot_exact_panel_excludes_recommendation_status_and_address() -> No
         assert "identity mismatch" in str(exc)
     else:
         raise AssertionError("Foreign exact-ID panel must fail closed")
+
+
+def test_application_end_and_price_are_not_proof_of_trade_completion_or_activity():
+    client = TBankrotClient()
+    for text in ("Текущая цена 1 000 000 ₽", "Прием заявок завершен", "Приём заявок окончен"):
+        assert client.parse_detail_html("<div>" + text + "</div>", "https://tbankrot.ru/item?id=1")["auction_status"] == "unknown"
+    for text, expected in (("Торги отменены", "closed"), ("Торги завершены", "closed"),
+                           ("Прием заявок завершен. Идут торги", "active")):
+        assert client.parse_detail_html("<div>" + text + "</div>", "https://tbankrot.ru/item?id=1")["auction_status"] == expected

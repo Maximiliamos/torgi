@@ -707,10 +707,9 @@ class HtmlEtpConnector(AuctionConnector):
         self._last_response: requests.Response | None = None
         self._last_page = 0
         self._page_fingerprints: dict[int, str] = {}
-        self.session.headers.setdefault(
-            "User-Agent",
-            "TORGI/1.0 (+https://github.com/Maximiliamos/torgi; public read-only connector)",
-        )
+        if str(self.session.headers.get("User-Agent", "")).startswith("python-requests/"):
+            self.session.headers.pop("User-Agent")
+        self.session.headers.setdefault("User-Agent", "TORGI/1.0 (+https://github.com/Maximiliamos/torgi; public read-only connector)")
 
     RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
 

@@ -10,6 +10,7 @@ import json
 import sys
 
 from bankrotai.scrapers import TorgiGovClient
+from bankrotai.services.asset_category import classify_category
 
 
 def main():
@@ -36,6 +37,16 @@ def main():
             if getattr(lot, name) not in (None, ""):
                 observed.add(name)
         explicit_current = client._pick_price(payload, "currentPrice", "priceFin", "finalPrice", "actualPrice")
+        if not client._pick(payload, "lotName", "name", "title", "lotTitle", "subject", "objectName", "noticeName"):
+            observed.discard("title")
+        if not client._pick(payload, "lotDescription", "description", "fullDescription", "objectInfo", "assetDescription", "comment"):
+            observed.discard("description")
+        derived = {"detail_level"}
+        category = classify_category(lot.title, lot.description)
+        if {"title", "description"} <= observed and category != "other":
+            lot.category = category
+            observed.add("category")
+            derived.add("category")
         if explicit_current is not None:
             lot.current_price = explicit_current
             observed.add("current_price")
@@ -46,7 +57,7 @@ def main():
         items.append({"lot_id": receipt["lot_id"], "normalized": asdict(lot), "verification": {
             "identity_verified": True, "external_id": external, "source_url": lot.source_url,
             "sha256": digest, "checked_at_utc": receipt["checked_at_utc"],
-            "observed_fields": sorted(observed - {"detail_level"}), "derived_fields": ["detail_level"],
+            "observed_fields": sorted(observed - derived), "derived_fields": sorted(derived),
         }})
     print(json.dumps({"items": items, "database_writes": 0}, default=str, ensure_ascii=True))
 

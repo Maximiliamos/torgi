@@ -400,6 +400,9 @@ def test_full_mets_crawler_still_rejects_explicit_vehicle_title(monkeypatch) -> 
     assert page.items == []
     assert page.metadata["verified_property_lots"] == 0
     assert page.metadata["rejection_codes"] == {"property_evidence_missing": 1}
+    assert page.metadata["detail_rejection_samples"] == [
+        {"external_id": "244381-1", "reason": "property_evidence_missing"},
+    ]
 
 def test_full_mets_reports_oversized_detail_separately(monkeypatch) -> None:
     import bankrotai.connectors.registry.mets_sync as mod
@@ -432,4 +435,7 @@ def test_full_mets_reports_oversized_detail_separately(monkeypatch) -> None:
 
     assert page.items == []
     assert page.metadata["rejection_codes"] == {"detail_html_oversize": 1}
+    assert page.metadata["detail_rejection_samples"] == [
+        {"external_id": "244381-1", "reason": "detail_html_oversize"},
+    ]
 

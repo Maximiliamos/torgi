@@ -916,6 +916,8 @@ class TorgiGovClient:
             ) from exc
 
         lots = self._parse_excel_export(response.content)
+        from bankrotai.services.torgi_gov_normalization import apply_export_transaction_scope
+        apply_export_transaction_scope(lots, filters.type_transaction)
         lots = [lot for lot in lots if is_sale_real_estate_lot(lot)]
         if filters.subject_rf:
             before = len(lots)
@@ -1006,7 +1008,7 @@ class TorgiGovClient:
         characteristics = self._clean_text(get("Характеристики имущества"))
         attributes = self._clean_text(get("Дополнительные атрибуты"))
         address = self._clean_text(get("Местонахождение имущества")) or extract_address(description)
-        region_name = self._clean_text(get("Субъект РФ")) or self._extract_region_from_text(" ".join([address, description]))
+        region_name = self._clean_text(get("Субъект РФ")) or self._extract_region_from_text(" ".join([address or "", description]))
         status = self._clean_text(get("Статус лота") or get("Статус извещения"))
         start_price = self._coerce_price(get("Начальная цена"))
         final_price = self._coerce_price(get("Итоговая цена"))
@@ -1014,7 +1016,7 @@ class TorgiGovClient:
             part for part in (title, description, address, category_name, characteristics, attributes) if part
         )
         cadastral_numbers = extract_cadastral_numbers(combined_text)
-        published_at = self._parse_date(get("Дата публикации") or get("Дата и время начала подачи заявок"))
+        published_at = self._parse_date(get("Дата публикации"))
         bidd_end = self._clean_text(get("Дата и время окончания подачи заявок"))
         auction_start = self._clean_text(get("Дата и время начала аукциона"))
         raw_data = {
@@ -1050,7 +1052,7 @@ class TorgiGovClient:
             vin=None,
             area=extract_area(combined_text) or extract_land_area(combined_text),
             start_price=start_price,
-            current_price=final_price or start_price,
+            current_price=final_price if final_price is not None else start_price,
             auction_status=self._normalize_status(status),
             lot_url=lot_url or None,
             source_url=lot_url or notice_url or None,
@@ -1522,6 +1524,10 @@ class TorgiGovClient:
             return "unknown"
         if text.upper() in self._STATUS_MAP:
             return self._STATUS_MAP[text.upper()]
+        if "приостанов" in text:
+            return "paused"
+        if "определение победителя" in text:
+            return "scheduled"
         for raw, normalized in self._STATUS_MAP.items():
             if raw.lower() in text:
                 return normalized

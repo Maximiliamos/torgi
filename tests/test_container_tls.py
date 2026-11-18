@@ -8,6 +8,10 @@ import ssl
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_CERTIFICATES = {
+    "globalsign_gcc_r6_alphassl_ca_2025.crt": (
+        "GlobalSign GCC R6 AlphaSSL CA 2025",
+        "a883559231f8388daf35ce41c8101040ae8fd9b656434247b9475af592cc08ca",
+    ),
     "russian_trusted_root_ca.crt": (
         "Russian Trusted Root CA",
         "d26d2d0231b7c39f92cc738512ba54103519e4405d68b5bd703e9788ca8ecf31",
@@ -49,4 +53,5 @@ def test_api_container_uses_the_combined_verified_ca_bundle() -> None:
     assert "update-ca-certificates" in dockerfile
     assert "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt" in dockerfile
     assert "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" in dockerfile
+    assert "COPY certs/globalsign_gcc_r6_alphassl_ca_2025.crt" in dockerfile
     assert "verify=false" not in dockerfile.lower()

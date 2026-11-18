@@ -18,3 +18,22 @@ Expected SHA-256 fingerprints:
 
 The container adds these files to Debian's combined CA bundle. TLS verification
 remains enabled; do not replace this with `verify=false` or an insecure download.
+
+## Missing GlobalSign intermediate on etp-profit.ru
+
+On 2026-11-18 the provider's leaf certificate was valid for `*.etp-profit.ru`
+but its TLS server omitted GlobalSign GCC R6 AlphaSSL CA 2025. Windows could
+build the chain; the production Debian client failed with `unable to get
+local issuer certificate`. The intermediate was downloaded over verified
+HTTPS from its issuing CA, using the leaf's Authority Information Access URL:
+
+- https://secure.globalsign.com/cacert/gsgccr6alphasslca2025.crt
+- DER SHA-256: `a883559231f8388daf35ce41c8101040ae8fd9b656434247b9475af592cc08ca`
+- Issuer: GlobalSign Root CA - R6, already present in the Debian root bundle.
+- Valid until 2027-05-21 00:00:00 UTC; renew/remove this workaround when the
+  provider fixes its served chain or changes issuer.
+
+Before inclusion, `openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt`
+validated the intermediate in the existing production container. Loading it
+alongside the existing root bundle gave HTTP 200 from `/lots` with hostname
+verification and CERT_REQUIRED. No new root or disabled verification is used.

@@ -138,6 +138,25 @@ def test_torgi_russia_lot_page_parses_current_lot_data_rows() -> None:
     assert result.auction_at.isoformat() == "2026-09-30T15:00:00"
 
 
+def test_torgi_russia_enrichment_keeps_raw_dates_json_serializable() -> None:
+    item = _new_site_lot()
+    item["stages"] = {"begin_bid_time": "2026-08-20 09:00:00",
+                      "end_bid_time": "2026-08-25 18:00:00",
+                      "begin_offer_time": "2026-08-27 10:30:00"}
+    html = _nextjs_search_html([item])
+    connector = TorgiRussiaConnector()
+    lot = TorgiRussiaClient.parse_search_payload({"data": [_new_site_lot()]})[0]
+    with patch.object(connector.client, "fetch_lot_page", return_value=(html, lot.lot_url)):
+        enriched = asyncio.run(connector.enrich_lot(lot))
+    raw = json.loads(json.dumps(enriched.raw_data))
+    assert raw["application_start_at"] == "2026-08-20T09:00:00"
+    assert raw["application_deadline"] == "2026-08-25T18:00:00"
+    assert raw["auction_at"] == "2026-08-27T10:30:00"
+    assert enriched.application_start_at.isoformat() == raw["application_start_at"]
+    assert enriched.application_deadline.isoformat() == raw["application_deadline"]
+    assert enriched.auction_at.isoformat() == raw["auction_at"]
+
+
 def test_torgi_russia_parse_search_page() -> None:
     html = """
     <main><article class="card">
@@ -803,7 +822,8 @@ def test_torgi_russia_retries_read_timeout_with_exact_backoff() -> None:
     assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
 
 
-def test_torgi_russia_retries_only_retryable_http_statuses() -> None:
+@pytest.mark.parametrize("refusal", [401, 403, 429])
+def test_torgi_russia_retries_only_retryable_http_statuses(refusal) -> None:
     item = _new_site_lot()
     html = _nextjs_search_html([item], total=1)
 
@@ -839,14 +859,14 @@ def test_torgi_russia_retries_only_retryable_http_statuses() -> None:
     assert retry_session.calls == 2
     assert [call.args[0] for call in sleep.call_args_list] == [1]
 
-    permanent_session = Session([403])
+    permanent_session = Session([refusal])
     with patch("bankrotai.torgi_russia.time.sleep") as sleep:
         try:
             TorgiRussiaClient(session=permanent_session).search_lots(TorgiRussiaSearchFilters())
         except requests.HTTPError:
             pass
         else:
-            raise AssertionError("HTTP 403 must fail without retry")
+            raise AssertionError(f"HTTP {refusal} must fail without retry")
     assert permanent_session.calls == 1
     sleep.assert_not_called()
 
@@ -1059,6 +1079,37 @@ def test_torgi_russia_reported_nextjs_stages_and_exact_status() -> None:
     assert "Унимерь" in result.description
 
 
+def test_nextjs_detail_never_uses_recommended_cadastre_or_primary_link():
+    item = _new_site_lot(lot_id=7267108)
+    item["cadastrals"] = ["33:01:000001:42"]
+    item["information"] = "Здание 33:01:000001:42"
+    primary = "https://torgi.gov.ru/new/public/lots/lot/23000054230000000401_9/(lotInfo:info)"
+    item["source_links"] = [{"link": primary, "title": "Лот на ГИС Торги"}]
+    html = _nextjs_search_html([item]) + '''
+    <article>Рекомендуемый лот 77:01:0004010:123
+    <a href="https://torgi.gov.ru/new/public/lots/lot/OTHER_1/(lotInfo:info)">ГИС</a>
+    </article>'''
+    detail = TorgiRussiaClient.parse_lot_page(html, "https://торги-россии.рф/lot/7267108")
+    assert detail.cadastral_numbers == ["33:01:000001:42"]
+    assert detail.gis_torgi_url == primary
+
+
+def test_nextjs_detail_requires_the_requested_record():
+    html = _nextjs_search_html([_new_site_lot(lot_id=999)])
+    with pytest.raises(RuntimeError, match="identity"):
+        TorgiRussiaClient.parse_lot_page(html, "https://торги-россии.рф/lot/7267108")
+
+
+def test_enrichment_refuses_unproven_legacy_detail_identity():
+    connector = TorgiRussiaConnector()
+    lot = TorgiRussiaClient.parse_search_payload({"data": [_new_site_lot()]})[0]
+    with patch.object(connector.client, "fetch_lot_page", return_value=("<html>Login</html>", lot.lot_url)):
+        with pytest.raises(RuntimeError, match="identity"):
+            asyncio.run(connector.enrich_lot(lot))
+    assert lot.detail_level == "search"
+    assert "detail_enrichment_status" not in lot.raw_data
+
+
 def test_torgi_russia_reported_completed_exact_status_is_closed() -> None:
     item = _new_site_lot(
         lot_id=7265021,
@@ -1094,6 +1145,6 @@ def test_torgi_russia_reported_completed_exact_status_is_closed() -> None:
     assert result.address == "МО, г. Ногинск, ул. Леснова, д. 3 к. 1"
 
 
-def test_torgi_russia_detail_enrichment_contract_is_v6() -> None:
-    assert TorgiRussiaConnector.detail_enrichment_version == 6
-    assert TorgiRussiaConnector.compatible_detail_enrichment_versions == frozenset({6})
+def test_torgi_russia_detail_enrichment_contract_is_v7() -> None:
+    assert TorgiRussiaConnector.detail_enrichment_version == 7
+    assert TorgiRussiaConnector.compatible_detail_enrichment_versions == frozenset({7})

@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from bankrotai.db import Base, CanonicalLot, ProcessedLot, SourceLot
+from bankrotai.db import Base, CanonicalLot, LotSyncRun, ProcessedLot, SourceLot
 from bankrotai.domain import NormalizedLot
 from bankrotai.logic import persist_lot
 from bankrotai.services.verified_source_repair import repair_verified_source_lots
@@ -92,6 +92,28 @@ def test_exact_scope_and_preview_are_required(context):
         repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True)
 
 
+@pytest.mark.parametrize("observation_kind", ["explicit", "legacy_run"])
+def test_older_gis_proof_cannot_overwrite_a_newer_primary_ingestion(context, observation_kind):
+    session, record, source, evidence = context
+    observed_at = datetime.now(timezone.utc)
+    record.source_system = source.source_system = "torgi.gov.ru"
+    evidence[0]["normalized"]["source_system"] = "torgi.gov.ru"
+    evidence[0]["verification"].update(
+        source_url="https://torgi.gov.ru/1",
+        checked_at_utc=(observed_at - timedelta(minutes=1)).isoformat(),
+    )
+    if observation_kind == "explicit":
+        source.raw_data = {"ingestion_observed_at": observed_at.isoformat()}
+    else:
+        session.add(LotSyncRun(id="newer-primary-run", status="success", trigger_type="manual",
+                               started_at=observed_at.replace(tzinfo=None)))
+        source.last_sync_run_id = "newer-primary-run"
+    session.commit()
+    with pytest.raises(ValueError, match="older than the latest primary ingestion"):
+        repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert record.address == source.address == "Старый адрес"
+
+
 def test_collateral_claim_does_not_poison_shared_physical_asset(context):
     session, record, source, evidence = context
     original = session.get(CanonicalLot, source.canonical_lot_id)
@@ -139,3 +161,37 @@ def test_canonical_edit_and_changed_desired_values_invalidate_preview(context):
     with pytest.raises(ValueError, match="stale"):
         repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
                                     expected_states=states, expected_evidence_sha256=preview["evidence_sha256"])
+
+
+def test_older_snapshot_cannot_overwrite_a_newer_verified_field(context):
+    session, record, source, evidence = context
+    newer = datetime.now(timezone.utc).isoformat()
+    source.raw_data = {"verified_source_fields": {"address": {"checked_at_utc": newer, "sha256": "b" * 64}}}
+    session.commit()
+    evidence[0]["verification"]["checked_at_utc"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    with pytest.raises(ValueError, match="older than"):
+        repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert record.address == "Старый адрес"
+
+
+def test_isolation_releases_other_legacy_owner_without_deleting_its_group(context):
+    session, record, source, evidence = context
+    shared = session.get(CanonicalLot, source.canonical_lot_id)
+    shared.legacy_processed_lot_id = None
+    orphan = CanonicalLot(canonical_key="old-owner", legacy_processed_lot_id=record.id,
+                          title="Historical group", category="land")
+    session.add_all([orphan, SourceLot(canonical_lot_id=shared.id, source_system="other.ru", external_id="other:2")])
+    session.commit()
+    values = evidence[0]["normalized"]
+    values["cadastral_number"] = "76:23:0000001:999"
+    values["raw_data"]["repair_observed_fields"].append("cadastral_number")
+    evidence[0]["verification"]["observed_fields"].append("cadastral_number")
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    session.flush()
+    assert orphan.legacy_processed_lot_id is None
+    assert orphan.title == "Historical group" and session.get(CanonicalLot, orphan.id) is orphan
+    assert source.canonical_lot_id not in {orphan.id, shared.id}
+    assert record.review_status == "approved"

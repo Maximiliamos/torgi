@@ -11,6 +11,7 @@ import json
 from sqlalchemy import select
 
 from bankrotai.connectors.etp_sources.common import EtpSearchFilters
+from bankrotai.connectors.registry import connector_registry
 from bankrotai.connectors.registry.mets_sync import MetsSyncFilters
 from bankrotai.db import LotNote, ProcessedLot, SessionLocal
 from bankrotai.services.ingestion import NationwideIngestionService
@@ -30,6 +31,25 @@ class SerialAcceptance(NationwideIngestionService):
                 return {"status": "failed", "sources": results, "expired_after_auction": 0}
         return {"status": "success", "sources": results, "expired_after_auction": 0,
                 "global_deduplication": False, "missing_lot_reconciliation": False}
+
+
+def traced_connector(source_id):
+    connector = connector_registry.create(source_id)
+    search = connector.search
+
+    async def traced_search(filters, cursor=None):
+        page = await search(filters, cursor)
+        print(json.dumps({
+            "event": "source_page", "source_system": source_id, "cursor": cursor,
+            "accepted_ids": [lot.external_id for lot in page.items],
+            "reused_ids": page.metadata.get("reused_existing_ids", []),
+            "detail_rejection_samples": page.metadata.get("detail_rejection_samples", []),
+            "next_cursor": page.next_cursor,
+        }), flush=True)
+        return page
+
+    connector.search = traced_search
+    return connector
 
 
 def reviews_digest():
@@ -53,7 +73,8 @@ async def main():
                        max_batches=500, require_source_end=True, reuse_unchanged_details=True),
     )
     baseline = reviews_digest()
-    service = SerialAcceptance(SessionLocal, max_concurrent_sources=1, profile_timings=True)
+    service = SerialAcceptance(SessionLocal, connector_factory=traced_connector,
+                               max_concurrent_sources=1, profile_timings=True)
     for iteration in (1, 2):
         run_id = service.create_run(triggered_by="systemic_completion", trigger_type="manual", total_sources=3)
         print(json.dumps({"event": "pass_started", "iteration": iteration, "run_id": run_id}), flush=True)

@@ -29,6 +29,10 @@ from bankrotai.geo import (
     validate_geocoding_result,
 )
 from bankrotai.services.quality import record_geo_failure, resolve_geo_failure
+from bankrotai.services.geo_save_guard import (
+    save_geo_chunk as _save_geo_chunk,
+    save_geo_item_isolated as _save_geo_item_isolated,
+)
 from bankrotai.services.geo_resilience import (
     GeoProviderUnavailable,
     is_operational_category,
@@ -1357,50 +1361,6 @@ def _save_geo_item(session: Any, lot: ProcessedLot, value: Any) -> tuple[bool, s
     lot.geo_input_hash = current_input_hash
     _record_classified_failure(session, lot_id, value)
     return False, _geocoding_failure_reason(value)
-
-def _save_geo_chunk(
-    session_factory: Callable[[], Any],
-    chunk: list[tuple[str, GeoWorkItem]],
-    resolved: dict[str, Any],
-) -> list[tuple[bool, str]]:
-    """Persist a chunk in one transaction; callers may retry item-by-item on failure."""
-    with session_factory() as session:
-        lots = {
-            lot.id: lot
-            for lot in session.scalars(
-                select(ProcessedLot).where(ProcessedLot.id.in_([item.lot_id for _, item in chunk]))
-            ).all()
-        }
-        outcomes = [
-            _save_geo_item(session, lot, resolved.get(key))
-            for key, item in chunk
-            if (lot := lots.get(item.lot_id)) is not None
-        ]
-        session.commit()
-        return outcomes
-
-
-def _save_geo_item_isolated(
-    session_factory: Callable[[], Any],
-    key: str,
-    item: GeoWorkItem,
-    resolved: dict[str, Any],
-) -> tuple[bool, str] | None:
-    """Preserve per-lot fault isolation when the fast chunk transaction fails."""
-    try:
-        with session_factory() as session:
-            lot = session.get(ProcessedLot, item.lot_id)
-            if lot is None:
-                return None
-            outcome = _save_geo_item(session, lot, resolved.get(key))
-            session.commit()
-            return outcome
-    except Exception as exc:
-        with session_factory() as session:
-            _record_scheduled_failure(session, item.lot_id, str(exc))
-            session.commit()
-        return False, f"persistence:{exc.__class__.__name__}"[:160]
-
 
 def _geocode_pending_lots_unlocked(
     session_factory: Callable[[], Any],

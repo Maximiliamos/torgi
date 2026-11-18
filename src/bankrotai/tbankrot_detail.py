@@ -14,12 +14,10 @@ ENDED_DETAIL_MARKERS = (
     "торги завершены",
     "торги не состоялись",
     "торги состоялись",
-    "прием заявок завершен",
-    "приём заявок завершен",
+    "торги отменены",
     "лот снят с торгов",
 )
 ACTIVE_DETAIL_MARKERS = (
-    "текущая цена",
     "идут торги",
     "прием заявок",
     "приём заявок",
@@ -52,6 +50,10 @@ def parse_tbankrot_detail_html(html: str, page_url: str) -> dict[str, Any]:
         auction_status = "paused"
     elif any(token in page_text for token in ENDED_DETAIL_MARKERS):
         auction_status = "closed"
+    elif "идут торги" in page_text:
+        auction_status = "active"
+    elif re.search(r"при[её]м заявок\s+(?:заверш[её]н|окончен|не производится)", page_text):
+        auction_status = "unknown"
     elif any(token in page_text for token in ACTIVE_DETAIL_MARKERS):
         auction_status = "active"
     else:

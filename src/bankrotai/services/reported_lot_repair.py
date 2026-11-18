@@ -70,7 +70,11 @@ def _repair_state(session, record, source, apply):
     )) if canonical is not None else 0
     values = [[column.name, _plain(getattr(canonical, column.name))]
               for column in CanonicalLot.__table__.columns] if canonical is not None else []
-    state = hashlib.sha256(json.dumps([_state(record, source), values, links], sort_keys=True, default=str).encode()).hexdigest()
+    owner_query = select(CanonicalLot).where(CanonicalLot.legacy_processed_lot_id == record.id)
+    owner = session.scalar(owner_query.with_for_update() if apply else owner_query)
+    owner_values = [[column.name, _plain(getattr(owner, column.name))]
+                    for column in CanonicalLot.__table__.columns] if owner is not None else []
+    state = hashlib.sha256(json.dumps([_state(record, source), values, links, owner_values], sort_keys=True, default=str).encode()).hexdigest()
     return state, canonical, links
 
 
@@ -172,8 +176,11 @@ def _repair_exact_lots(
                             if canonical is not None else {})
         if canonical is not None and entry["isolate_canonical"]:
             # A previously poisoned source row must not overwrite another asset's canonical.
-            if canonical.legacy_processed_lot_id == lot_id:
-                canonical.legacy_processed_lot_id = None
+            previous_owner = session.scalar(select(CanonicalLot).where(
+                CanonicalLot.legacy_processed_lot_id == lot_id,
+            ).with_for_update())
+            if previous_owner is not None:
+                previous_owner.legacy_processed_lot_id = None
                 session.flush()
             canonical = CanonicalLot(canonical_key=f"source-repair:{lot.source_system}:{lot.external_id}",
                                      legacy_processed_lot_id=lot_id, title=lot.title,
