@@ -659,7 +659,16 @@ class NationwideIngestionService:
             raise ValueError("Scheduled ETP per-page detail cap must be 1..5")
         accepted = []
         page_ids: set[str] = set()
+        with self.session_factory() as exclusion_session:
+            excluded_identities = excluded_source_identities(exclusion_session)
         for lot in partition_normalized_lots(result, lots):
+            identity = (str(lot.source_system or "").strip(), str(lot.external_id or "").strip())
+            if identity in excluded_identities:
+                # Count the source observation for coverage, but do not enrich or
+                # persist an identity explicitly removed by an operator.
+                result.items_seen += 1
+                result.seen_external_ids.add(lot.external_id)
+                continue
             if not is_sale_real_estate_lot(lot):
                 continue
             if result.source_system == "nistp.ru" and not catalogue_row_eligible_for_detail(lot):
