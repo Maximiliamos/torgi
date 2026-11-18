@@ -9,6 +9,7 @@ from bankrotai.db import LotSyncRun, SourceLot
 
 from bankrotai.services.asset_category import classify_category
 from bankrotai.services.reported_lot_repair import SOURCE_FIELDS, _repair_exact_lots
+from bankrotai.services.source_lot_exclusions import SourceLotExcludedError, excluded_ids
 
 
 # Logical connector IDs can differ from their current public host. Keep aliases
@@ -29,6 +30,7 @@ def repair_verified_source_lots(
     previous_verifications = {}
     run_observations = {}
     recheck_geo_ids = set()
+    source_identities = {}
     for item in evidence:
         proof = item.get("verification", {})
         lot = item.get("normalized", {})
@@ -46,8 +48,10 @@ def repair_verified_source_lots(
                 or not any(url.hostname == domain or str(url.hostname).endswith("." + domain)
                            for domain in domains)):
             raise ValueError("Source evidence URL is not on the exact source domain")
-        if proof.get("external_id") != lot.get("external_id"):
+        if (proof.get("external_id") != lot.get("external_id")
+                or not isinstance(lot.get("external_id"), str) or not lot["external_id"]):
             raise ValueError("Source proof and normalized identity differ")
+        source_identities.setdefault(source, set()).add(lot["external_id"])
         raw = lot.get("raw_data", {})
         if raw.get("repair_evidence_sha256") != proof["sha256"]:
             raise ValueError("Normalized evidence references a different source snapshot")
@@ -100,6 +104,9 @@ def repair_verified_source_lots(
                 previous = datetime.fromisoformat(stamp)
                 if previous.tzinfo is None or previous > checked:
                     raise ValueError(f"Source evidence is older than the verified field: {name}")
+    for source, identities in source_identities.items():
+        if excluded_ids(session, source, identities):
+            raise SourceLotExcludedError("Verified repair cannot restore an explicitly user-excluded source lot")
     digest = hashlib.sha256(json.dumps(evidence, sort_keys=True, default=str).encode()).hexdigest()
     if apply and expected_evidence_sha256 != digest:
         raise ValueError("Evidence does not match the reviewed preview")

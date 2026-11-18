@@ -154,6 +154,21 @@ def test_geo_recheck_cannot_use_unobserved_cadastral_identity(context):
     assert not session.dirty
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_fresh_proof_cannot_restore_a_user_excluded_identity(context, apply):
+    from bankrotai.services.source_lot_exclusions import SourceLotExcludedError, register_exclusion
+    session, record, source, evidence = context
+    register_exclusion(session, source_system=source.source_system, external_id=source.external_id,
+                       reason="Explicit user deletion must remain excluded")
+    record.is_archived = True
+    session.commit()
+    with pytest.raises(SourceLotExcludedError, match="user-excluded"):
+        repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=apply)
+    assert record.is_archived
+    assert record.address == source.address == "Старый адрес"
+    assert not session.dirty
+
+
 @pytest.mark.parametrize("observation_kind", ["explicit", "legacy_run"])
 def test_older_gis_proof_cannot_overwrite_a_newer_primary_ingestion(context, observation_kind):
     session, record, source, evidence = context
