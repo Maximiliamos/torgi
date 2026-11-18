@@ -156,6 +156,7 @@ def _repair_exact_lots(
                  "changes": changes, "exclude_from_property_map": not is_sale_real_estate_lot(lot)}
         entry["restore_source_provenance"] = source is None or source.processed_lot_id is None
         entry["isolate_canonical"] = bool(canonical is not None and links and links > 1 and different_asset)
+        entry["recheck_geo"] = lot_id in (recheck_geo_ids or set())
         items.append(entry)
         if not apply or protected:
             continue

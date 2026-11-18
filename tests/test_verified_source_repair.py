@@ -121,6 +121,39 @@ def test_source_proof_accepts_only_its_pinned_public_domain(context, source, url
     assert record.review_status == "approved"
 
 
+def test_fresh_identity_can_recheck_stale_geo_without_changing_source_facts(context):
+    session, record, source, evidence = context
+    record.current_geo_lat, record.current_geo_lon = 55, 37
+    record.current_geo_source = "nspd"
+    record.needs_geo_check = False
+    session.commit()
+    item = evidence[0]
+    item["recheck_geo"] = True
+    observed = ["cadastral_number"]
+    item["normalized"]["raw_data"]["repair_observed_fields"] = observed
+    item["verification"]["observed_fields"] = observed
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert preview["items"][0]["recheck_geo"] is True
+    assert (record.current_geo_lat, record.current_geo_lon) == (55, 37)
+    assert not session.dirty
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+                                expected_states={record.id: preview["items"][0]["expected_state"]},
+                                expected_evidence_sha256=preview["evidence_sha256"])
+    session.flush()
+    assert record.current_geo_lat is record.current_geo_lon is None
+    assert record.needs_geo_check
+    assert record.address == source.address == "Старый адрес"
+    assert record.review_status == "approved"
+
+
+def test_geo_recheck_cannot_use_unobserved_cadastral_identity(context):
+    session, record, _, evidence = context
+    evidence[0]["recheck_geo"] = True
+    with pytest.raises(ValueError, match="freshly observed cadastral identity"):
+        repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert not session.dirty
+
+
 @pytest.mark.parametrize("observation_kind", ["explicit", "legacy_run"])
 def test_older_gis_proof_cannot_overwrite_a_newer_primary_ingestion(context, observation_kind):
     session, record, source, evidence = context

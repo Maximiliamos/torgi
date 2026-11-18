@@ -28,6 +28,7 @@ def repair_verified_source_lots(
     now = datetime.now(timezone.utc)
     previous_verifications = {}
     run_observations = {}
+    recheck_geo_ids = set()
     for item in evidence:
         proof = item.get("verification", {})
         lot = item.get("normalized", {})
@@ -55,6 +56,12 @@ def repair_verified_source_lots(
             raise ValueError("Explicit bounded observed field scope is required")
         if not observed <= set(proof.get("observed_fields", [])) | {"category", "detail_level"}:
             raise ValueError("Repair includes a field absent from source evidence")
+        if "recheck_geo" in item and not isinstance(item["recheck_geo"], bool):
+            raise ValueError("GEO recheck must be an explicit boolean")
+        if item.get("recheck_geo"):
+            if "cadastral_number" not in observed or "cadastral_number" not in proof.get("observed_fields", []):
+                raise ValueError("GEO recheck requires freshly observed cadastral identity")
+            recheck_geo_ids.add(item["lot_id"])
         if any(lot.get(name) is None or lot.get(name) == "" for name in observed):
             raise ValueError("Missing public fields cannot erase historical facts")
         if "auction_status" in observed and lot.get("auction_status") == "unknown":
@@ -99,7 +106,7 @@ def repair_verified_source_lots(
     result = _repair_exact_lots(
         session, evidence=evidence, allowed_lot_ids=allowed_lot_ids, apply=apply,
         expected_states=expected_states, allow_reviewed_source_fields=True,
-        audit_scope="verified_source",
+        recheck_geo_ids=recheck_geo_ids, audit_scope="verified_source",
     )
     result["evidence_sha256"] = digest
     if apply:
