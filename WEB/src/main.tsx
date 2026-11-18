@@ -10,7 +10,7 @@ import {
   fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchRegions, fetchServerTime,
   fetchSavedSearches, fetchStats, fetchTBankrotAuthStatus, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
   clearMapCache, fetchOperationsProgress, fetchReliabilitySources, fetchReliabilitySummary, MainView, MaxBidScenario, OnlineLot, OperationsProgress, Participation, pauseGeocoding, probeSourceHealth, Procedure, RegionOption, ReliabilitySource, ReliabilitySummary, resumeGeocoding, saveParticipation, searchOnline,
-  saveSearch, SearchSource, SortMode, SourceHealth, splitLot, StatsResponse, toggleWatchlist
+  saveSearch, SearchSource, SortMode, splitLot, StatsResponse, toggleWatchlist
 } from "./lib/api";
 import { MapView } from "./features/map/MapView";
 import { TBankrotView } from "./features/tbankrot/TBankrotView";
@@ -191,18 +191,6 @@ const reliabilityCount = (value: number | null | undefined) =>
   typeof value === "number" ? value.toLocaleString("ru-RU") : "—";
 const reliabilityDate = (value: string | null | undefined) =>
   value ? new Date(value).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" }) + " МСК" : "Нет данных";
-const sourceCurrentError = (source: SourceHealth) => {
-  if (!source.last_error || !source.last_failure_at) return null;
-  if (source.last_success_at && Date.parse(source.last_success_at) >= Date.parse(source.last_failure_at)) return null;
-  return source.last_error;
-};
-const sourceSeverity = (source: SourceHealth) => {
-  if (source.circuit_state === "open" || source.circuit_state === "half_open" || source.status === "failed") return 2;
-  if (source.freshness_status !== "fresh" || source.coverage_status !== "fresh" || sourceCurrentError(source)) return 1;
-  return 0;
-};
-
-
 function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: string }) {
   const [summary, setSummary] = React.useState<ReliabilitySummary | null>(null);
   const [sources, setSources] = React.useState<ReliabilitySource[]>([]);
