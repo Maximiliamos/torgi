@@ -1,16 +1,18 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import {
-  Activity, AlertCircle, Banknote, Bookmark, Building2, Calculator, CheckCircle2,
-  ExternalLink, FileSearch, Files, Heart, ListFilter, Loader2, LogOut, Map,
-  NotebookPen, RefreshCcw, Search, ShieldCheck, Sparkles, Star, X
+  Activity, AlertCircle, AlertTriangle, Banknote, Bookmark, Building2, Calculator, CheckCircle2,
+  ChevronDown, Copy, Database, Download, ExternalLink, FileSearch, Files, HardDrive, Heart,
+  ListFilter, Loader2, LogOut, Map, MapPinned, NotebookPen, RefreshCcw, Search, Server,
+  ShieldCheck, Sparkles, Star, Wifi, X
 } from "lucide-react";
 import {
   addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCapabilities, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
-  fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchQuality, fetchRegions, fetchServerTime,
-  fetchSavedSearches, fetchSources, fetchStats, fetchTBankrotAuthStatus, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
-  clearMapCache, fetchOperationsProgress, MainView, MaxBidScenario, OnlineLot, OperationsProgress, Participation, pauseGeocoding, probeSourceHealth, Procedure, RegionOption, resumeGeocoding, saveParticipation, searchOnline,
-  saveSearch, SearchSource, SortMode, SourceHealth, splitLot, StatsResponse, toggleWatchlist
+  fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchRegions, fetchReliabilitySources,
+  fetchReliabilitySummary, fetchSavedSearches, fetchServerTime, fetchStats, fetchTBankrotAuthStatus, fetchWatchlist, importOnlineLot,
+  login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots, clearMapCache, MainView, MaxBidScenario, OnlineLot,
+  Participation, pauseGeocoding, probeSourceHealth, Procedure, RegionOption, ReliabilitySource, ReliabilitySummary, resumeGeocoding,
+  saveParticipation, searchOnline, saveSearch, SearchSource, SortMode, splitLot, StatsResponse, toggleWatchlist
 } from "./lib/api";
 import { MapView } from "./features/map/MapView";
 import { TBankrotView } from "./features/tbankrot/TBankrotView";
@@ -175,26 +177,84 @@ function DealView({ selectedLotId }: { selectedLotId: number | null }) {
   </section>;
 }
 
+
+const RELIABILITY_STATUS_LABELS: Record<string, string> = {
+  healthy: "Норма",
+  degraded: "Требует внимания",
+  failed: "Ошибка",
+  paused: "На паузе",
+  not_checked: "Не проверен",
+  fresh: "Актуально",
+  delayed: "Есть задержка",
+  stale: "Устарело",
+  missing: "Полного снимка нет",
+  partial: "Частично выполнено",
+  success: "Успешно",
+  running: "Выполняется",
+  queued: "В очереди",
+  closed: "Соединение разрешено",
+  open: "Временно отключён",
+  half_open: "Проверка восстановления",
+};
+
+const reliabilityNumber = (value?: number | null) =>
+  value == null ? "—" : new Intl.NumberFormat("ru-RU").format(value);
+
+const reliabilityPercent = (value?: number | null) =>
+  value == null ? "—" : `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(value)}%`;
+
+function reliabilityAge(seconds?: number | null) {
+  if (seconds == null || !Number.isFinite(seconds)) return "нет данных";
+  const value = Math.max(0, seconds);
+  if (value < 60) return `${Math.round(value)} сек назад`;
+  if (value < 3600) return `${Math.round(value / 60)} мин назад`;
+  if (value < 86_400) {
+    const hours = value / 3600;
+    return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(hours)} ч назад`;
+  }
+  const days = value / 86_400;
+  return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(days)} дн. назад`;
+}
+
+function reliabilityDateAge(value?: string | null) {
+  if (!value) return "нет данных";
+  const stamp = Date.parse(value);
+  if (!Number.isFinite(stamp)) return "нет данных";
+  return reliabilityAge((Date.now() - stamp) / 1000);
+}
+
+function reliabilitySourceTone(status: string) {
+  if (status === "healthy") return "ok";
+  if (status === "failed") return "bad";
+  if (status === "degraded") return "warn";
+  return "neutral";
+}
+
+function reliabilitySystemTone(status?: string) {
+  if (status === "ok") return "ok";
+  if (status === "incident") return "bad";
+  return "warn";
+}
+
 function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: string }) {
-  const [quality, setQuality] = React.useState<Record<string, number>>({});
-  const [sources, setSources] = React.useState<SourceHealth[]>([]);
-  const [operations, setOperations] = React.useState<OperationsProgress | null>(null);
-  const [diagnostics, setDiagnostics] = React.useState<Record<string, unknown> | null>(null);
+  const [summary, setSummary] = React.useState<ReliabilitySummary | null>(null);
+  const [sources, setSources] = React.useState<ReliabilitySource[]>([]);
   const [backgroundJobs, setBackgroundJobs] = React.useState(false);
   const [error, setError] = React.useState("");
   const [action, setAction] = React.useState("");
+  const [sourceFilter, setSourceFilter] = React.useState<"attention" | "all" | "healthy" | "paused" | "pilot">("attention");
+  const [sourceSearch, setSourceSearch] = React.useState("");
+  const [notice, setNotice] = React.useState("");
 
   const load = React.useCallback(async () => {
     try {
-      const [q, s, o, capabilities] = await Promise.all([
-        fetchQuality(),
-        fetchSources(),
-        fetchOperationsProgress(),
+      const [nextSummary, nextSources, capabilities] = await Promise.all([
+        fetchReliabilitySummary(),
+        fetchReliabilitySources(),
         fetchCapabilities(),
       ]);
-      setQuality(q);
-      setSources(s);
-      setOperations(o);
+      setSummary(nextSummary);
+      setSources(nextSources);
       setBackgroundJobs(Boolean(capabilities.background_jobs));
       setError("");
     } catch (err) {
@@ -208,18 +268,9 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
     return () => window.clearInterval(timer);
   }, [load, refreshToken]);
 
-  const host = operations?.summary?.host;
-  const sourceSummary = operations?.summary?.sources;
-  const geo = operations?.geocoding;
-  const map = operations?.summary?.map;
-  const networkOpen = Boolean(sourceSummary?.network?.circuit_open);
-  const diskFree = host?.disk?.free_gb;
-  const diskHealthy = host?.disk?.healthy === true;
-  const backupHealthy = host?.backup_healthy === true;
-  const runnerHealthy = host?.runner_healthy === true;
-
   const runAction = async (label: string, operation: () => Promise<unknown>) => {
     setAction(label);
+    setNotice("");
     try {
       await operation();
       await load();
@@ -230,64 +281,321 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
     }
   };
 
-  return <section className="operationsDashboard">
-    <div className="pageCard operationsOverview">
-      <div className="operationsTitle"><div><span className="eyebrow">Production</span><h2>Состояние системы</h2></div><span className={networkOpen ? "healthBadge bad" : "healthBadge ok"}>{networkOpen ? "Сеть источников ограничена" : "Сеть источников стабильна"}</span></div>
-      <div className="operationsMetricGrid">
-        <article><span>Источники</span><strong>{sourceSummary ? `${sourceSummary.ready}/${sourceSummary.total}` : "—"}</strong><small>готовых полных снимков</small></article>
-        <article><span>GEO</span><strong>{geo ? `${geo.percent.toFixed(1)}%` : "—"}</strong><small>actionable {geo?.actionable_remaining ?? "—"} · deferred {(geo?.deferred_no_match ?? 0) + (geo?.deferred_validation ?? 0)}</small></article>
-        <article><span>Карта</span><strong>{map?.point_count?.toLocaleString("ru-RU") ?? "—"}</strong><small>{map?.status || "нет данных"} · {map?.version || "—"}</small></article>
-        <article data-health={diskHealthy ? "ok" : "bad"}><span>Диск C:</span><strong>{typeof diskFree === "number" ? `${diskFree.toFixed(1)} ГБ` : "—"}</strong><small>рекомендуется ≥ {host?.disk?.recommended_gb ?? 25} ГБ</small></article>
-        <article data-health={backupHealthy ? "ok" : "bad"}><span>Backup</span><strong>{backupHealthy ? "OK" : "Требует внимания"}</strong><small>{host?.backup_age_hours != null ? `${host.backup_age_hours.toFixed(1)} ч назад` : "нет свежего статуса"}</small></article>
-        <article data-health={runnerHealthy ? "ok" : "bad"}><span>Runner</span><strong>{runnerHealthy ? "Online" : "Нет свежей проверки"}</strong><small>{host?.runner_age_seconds != null ? `${Math.round(host.runner_age_seconds)} сек назад` : "диагностика не записана"}</small></article>
-      </div>
-      <div className="operationsActions">
-        {role === "admin" && backgroundJobs && <>
-          <button className="secondaryButton" disabled={Boolean(action) || geo?.paused === true} onClick={() => runAction("pause", pauseGeocoding)}>Пауза GEO</button>
-          <button className="secondaryButton" disabled={Boolean(action) || geo?.paused !== true} onClick={() => runAction("resume", resumeGeocoding)}>Возобновить GEO</button>
-        </>}
-        <button className="secondaryButton" disabled={Boolean(action)} onClick={() => void load()}><RefreshCcw size={15} />Обновить</button>
-        {role === "admin" && !backgroundJobs && <small className="operationsReadOnlyNote">Операционные действия скрыты: этот API работает в read-only режиме.</small>}
-      </div>
-    </div>
+  const downloadDiagnostics = async () => {
+    setAction("diagnostics-download");
+    try {
+      const payload = await fetchDiagnostics();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `bankrotai-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setNotice("Диагностика скачана");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAction("");
+    }
+  };
 
-    <div className="pageCard">
-      <h2>Состояние источников</h2>
-      <div className="sourceList operationsSources">{sources.map((source) => {
-        const circuit = source.circuit_state || "closed";
-        const healthy = source.freshness_status === "fresh" && circuit === "closed";
-        return <article key={source.source_system}>
-          <i className={healthy ? "ok" : "warn"} />
-          <div>
-            <div className="sourceHeading"><strong>{source.source_system}</strong><span className={circuit === "closed" ? "healthBadge ok" : "healthBadge bad"}>{circuit}</span></div>
-            <span>{source.status} · свежесть {source.freshness_status} · полный снимок {source.coverage_status} · {source.items_seen} записей</span>
-            {source.next_retry_at && <small>Следующая попытка: {new Date(source.next_retry_at).toLocaleString("ru-RU")}</small>}
-            <small>Последний проход: {source.last_pages_scanned} стр. · +{source.last_items_inserted} / Δ{source.last_items_updated} / архив {source.last_items_archived} / ошибок {source.last_items_failed}</small>
-            {source.last_error && <small>{source.last_error_category || "ошибка"}: {source.last_error}</small>}
+  const copyDiagnostics = async () => {
+    setAction("diagnostics-copy");
+    try {
+      const payload = await fetchDiagnostics();
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setNotice("Диагностика скопирована в буфер обмена");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAction("");
+    }
+  };
+
+  const filteredSources = React.useMemo(() => {
+    const query = sourceSearch.trim().toLocaleLowerCase("ru-RU");
+    return sources.filter((source) => {
+      const matchesSearch = !query || [
+        source.display_name_ru,
+        source.canonical_id,
+        ...source.aliases,
+      ].some((value) => value.toLocaleLowerCase("ru-RU").includes(query));
+      if (!matchesSearch) return false;
+      if (sourceFilter === "healthy") return source.overall_status === "healthy";
+      if (sourceFilter === "paused") return source.overall_status === "paused";
+      if (sourceFilter === "pilot") return source.role === "pilot";
+      if (sourceFilter === "attention") return !["healthy", "paused"].includes(source.overall_status);
+      return true;
+    });
+  }, [sourceFilter, sourceSearch, sources]);
+
+  if (!summary && !error) return <section className="reliabilityPage"><State>Загрузка состояния системы</State></section>;
+
+  const systemTone = reliabilitySystemTone(summary?.system.status);
+  const sourceSummary = summary?.sources;
+  const geo = summary?.geo;
+  const map = summary?.map;
+  const host = summary?.host;
+  const dataQuality = summary?.data_quality;
+  const integrity = summary?.integrity;
+  const infrastructureDegraded = Boolean(
+    host && (
+      host.disk.status !== "ok"
+      || !host.backup.healthy
+      || !host.runner_diagnostic.fresh
+      || host.api.status !== "ok"
+      || host.database.status !== "ok"
+    )
+  );
+
+  const qualityMetrics = dataQuality ? [
+    ["Без адреса", dataQuality.missing_address],
+    ["Без кадастрового номера", dataQuality.missing_cadastre],
+    ["Без цены", dataQuality.missing_price],
+    ["Неизвестный статус", dataQuality.unknown_status],
+    ["Без региона", dataQuality.missing_region],
+    ["Без ссылки на источник", dataQuality.missing_url],
+    ["Неположительная цена", dataQuality.non_positive_price],
+  ] as const : [];
+
+  const mapSteps = map ? [
+    ["База данных", map.db_ok],
+    ["Набор карты", map.dataset_ok],
+    ["S3 manifest", map.s3_manifest_ok],
+    ["Публичная выдача", map.public_ok],
+  ] as const : [];
+
+  return <section className="reliabilityPage">
+    {summary && <section className={`reliabilityHero reliabilityHero--${systemTone}`}>
+      <div className="reliabilityHeroMain">
+        <div className={`reliabilityStatusIcon reliabilityStatusIcon--${systemTone}`}>
+          {summary.system.status === "ok" ? <CheckCircle2 /> : summary.system.status === "incident" ? <AlertCircle /> : <AlertTriangle />}
+        </div>
+        <div>
+          <div className="reliabilityHeroMeta">
+            <span>Production</span>
+            <span>Обновлено {reliabilityDateAge(summary.generated_at)}</span>
           </div>
-          {role === "admin" && backgroundJobs && <button className="secondaryButton sourceProbeButton" disabled={Boolean(action)} onClick={() => runAction(`probe:${source.source_system}`, () => probeSourceHealth(source.source_system))}>Probe</button>}
-        </article>;
-      })}</div>
-    </div>
-
-    <div className="pageCard">
-      <h2>GEO и журнал</h2>
-      <div className="metricGrid">
-        <div><span>С координатами</span><strong>{geo?.geocoded ?? "—"}</strong></div>
-        <div><span>Deferred no match</span><strong>{geo?.deferred_no_match ?? "—"}</strong></div>
-        <div><span>Deferred validation</span><strong>{geo?.deferred_validation ?? "—"}</strong></div>
-        <div><span>Network wait</span><strong>{geo?.network_wait ?? "—"}</strong></div>
+          <h2>{summary.system.title_ru}</h2>
+          <div className="reliabilityHeroReasons">
+            {summary.system.reasons.slice(0, 2).map((reason) => <p key={reason.code}><strong>{reason.title}.</strong> {reason.detail}</p>)}
+            {!summary.system.reasons.length && <p>Критических отклонений по обязательным проверкам не обнаружено.</p>}
+          </div>
+        </div>
       </div>
-      <div className="operationsJournal">{operations?.journal?.map((item, index) => <article key={`${item.kind}-${item.title}-${index}`}><span className={item.status === "completed" || item.status === "success" ? "healthBadge ok" : "healthBadge"}>{item.status}</span><div><strong>{item.title}</strong><small>{item.detail}</small>{item.at && <small>{new Date(item.at).toLocaleString("ru-RU")}</small>}</div></article>)}</div>
-      {role === "admin" && <button className="secondaryButton" onClick={async () => setDiagnostics(await fetchDiagnostics())}>Экспорт диагностики</button>}
-      {diagnostics && <pre className="diagnostics">{JSON.stringify(diagnostics, null, 2)}</pre>}
-      {error && <State error>{error}</State>}
-    </div>
+      <div className="reliabilityVersion">
+        <span>Версия</span>
+        <strong>{summary.system.deployment_sha ? summary.system.deployment_sha.slice(0, 8) : summary.system.app_version || "—"}</strong>
+        <small>Схема {summary.system.schema_revision || "—"}</small>
+      </div>
+    </section>}
 
-    <div className="pageCard">
-      <h2>Полнота данных</h2>
-      <div className="metricGrid">{Object.entries(quality).map(([key, value]) => <div key={key}><span>{key.split("_").join(" ")}</span><strong>{value}</strong></div>)}</div>
-    </div>
+    {summary && <section className="reliabilityKpiGrid" aria-label="Ключевые показатели надёжности">
+      <article data-health={sourceSummary && sourceSummary.failed === 0 && sourceSummary.degraded === 0 ? "ok" : "warn"}>
+        <div className="reliabilityKpiIcon"><Wifi /></div>
+        <span>Источники</span>
+        <strong>{sourceSummary ? `${sourceSummary.complete_fresh} / ${sourceSummary.configured_total}` : "—"}</strong>
+        <small>{sourceSummary ? `${sourceSummary.configured_total} настроено · ${sourceSummary.failed} с ошибкой · ${sourceSummary.paused_total} на паузе` : "—"}</small>
+      </article>
+      <article data-health={sourceSummary?.oldest_complete_snapshot_age_seconds != null && sourceSummary.oldest_complete_snapshot_age_seconds <= 36 * 3600 ? "ok" : "warn"}>
+        <div className="reliabilityKpiIcon"><Activity /></div>
+        <span>Свежесть данных</span>
+        <strong>{sourceSummary?.oldest_complete_snapshot_age_seconds != null ? reliabilityAge(sourceSummary.oldest_complete_snapshot_age_seconds) : "Нет полного снимка"}</strong>
+        <small>возраст самого старого актуального полного снимка среди настроенных источников</small>
+      </article>
+      <article data-health={geo && geo.percent >= 90 ? "ok" : "warn"}>
+        <div className="reliabilityKpiIcon"><MapPinned /></div>
+        <span>GEO</span>
+        <strong>{reliabilityPercent(geo?.percent)}</strong>
+        <small>{geo ? `${reliabilityNumber(geo.current_geocoded)} / ${reliabilityNumber(geo.population)} с текущими координатами` : "—"}</small>
+      </article>
+      <article data-health={map?.status === "ok" ? "ok" : map?.status === "incident" ? "bad" : "warn"}>
+        <div className="reliabilityKpiIcon"><Map /></div>
+        <span>Карта</span>
+        <strong>{reliabilityNumber(map?.point_count)}</strong>
+        <small>{map?.dataset_version || "нет текущего набора"} · {map?.status === "ok" ? "доставка подтверждена" : "требует проверки"}</small>
+      </article>
+      <article data-health={integrity?.critical_count === 0 ? integrity.warning_count === 0 ? "ok" : "warn" : "bad"}>
+        <div className="reliabilityKpiIcon"><ShieldCheck /></div>
+        <span>Целостность</span>
+        <strong>{integrity ? `${integrity.critical_count} критических` : "—"}</strong>
+        <small>{integrity ? `${integrity.warning_count} классов предупреждений` : "—"}</small>
+      </article>
+      <article data-health={infrastructureDegraded ? "warn" : "ok"}>
+        <div className="reliabilityKpiIcon"><Server /></div>
+        <span>Инфраструктура</span>
+        <strong>{infrastructureDegraded ? "Есть ограничения" : "Норма"}</strong>
+        <small>API · база · очередь · диагностика runner</small>
+      </article>
+      <article data-health={host?.backup.healthy ? "ok" : "bad"}>
+        <div className="reliabilityKpiIcon"><Database /></div>
+        <span>Резервная копия</span>
+        <strong>{host?.backup.age_hours != null ? reliabilityAge(host.backup.age_hours * 3600) : "Нет свежей проверки"}</strong>
+        <small>{host?.backup.healthy ? "восстановление подтверждено" : "требуется свежий backup и restore test"}</small>
+      </article>
+      <article data-health={host?.disk.status === "ok" ? "ok" : host?.disk.status === "critical" ? "bad" : "warn"}>
+        <div className="reliabilityKpiIcon"><HardDrive /></div>
+        <span>Диск C:</span>
+        <strong>{host?.disk.free_gb != null ? `${number(host.disk.free_gb)} ГБ` : "Нет данных"}</strong>
+        <small>норма ≥ 25 ГБ · предупреждение 15–25 ГБ</small>
+      </article>
+    </section>}
+
+    {summary && <section className="pageCard reliabilityAttention">
+      <div className="reliabilitySectionHeading">
+        <div><span className="eyebrow">Приоритет</span><h2>Требует внимания</h2></div>
+        <span className={`healthBadge ${summary.system.reasons.length ? "warn" : "ok"}`}>
+          {summary.system.reasons.length ? summary.system.reasons.length : "Нет проблем"}
+        </span>
+      </div>
+      {summary.system.reasons.length ? <div className="reliabilityAttentionList">
+        {summary.system.reasons.map((reason) => <article key={reason.code} data-severity={reason.severity}>
+          {reason.severity === "critical" ? <AlertCircle /> : <AlertTriangle />}
+          <div><strong>{reason.title}</strong><span>{reason.detail}</span></div>
+        </article>)}
+      </div> : <div className="reliabilityEmpty"><CheckCircle2 /><span>Актуальных проблем, влияющих на общий статус, нет.</span></div>}
+    </section>}
+
+    <section className="pageCard reliabilitySourcesCard">
+      <div className="reliabilitySectionHeading">
+        <div><span className="eyebrow">Сбор данных</span><h2>Источники</h2></div>
+        <small>{reliabilityNumber(filteredSources.length)} из {reliabilityNumber(sources.length)}</small>
+      </div>
+      <div className="reliabilitySourceToolbar">
+        <input aria-label="Поиск источника" value={sourceSearch} onChange={(event) => setSourceSearch(event.target.value)} placeholder="Поиск по названию или домену" />
+        <div className="reliabilityFilterTabs" role="group" aria-label="Фильтр источников">
+          {([
+            ["attention", "Требуют внимания"],
+            ["all", "Все"],
+            ["healthy", "Актуальные"],
+            ["paused", "На паузе"],
+            ["pilot", "Пилотные"],
+          ] as const).map(([id, title]) => <button key={id} className={sourceFilter === id ? "active" : ""} onClick={() => setSourceFilter(id)}>{title}</button>)}
+        </div>
+      </div>
+      <div className="reliabilitySourceHeader" aria-hidden="true">
+        <span>Источник</span><span>Состояние</span><span>Последний успех</span><span>Полный снимок</span><span>Записей</span><span>Текущая проблема</span><span />
+      </div>
+      <div className="reliabilitySourceList">
+        {filteredSources.map((source) => <details className="reliabilitySourceRow" key={source.canonical_id}>
+          <summary>
+            <div className="reliabilitySourceIdentity">
+              <strong>{source.display_name_ru}</strong>
+              <small>{source.canonical_id}{source.role === "pilot" ? " · пилот" : source.role === "historical_only" ? " · исторический" : ""}</small>
+            </div>
+            <span className={`healthBadge ${reliabilitySourceTone(source.overall_status)}`}>{RELIABILITY_STATUS_LABELS[source.overall_status] || "Неизвестно"}</span>
+            <span>{reliabilityDateAge(source.last_success_at)}</span>
+            <span>{RELIABILITY_STATUS_LABELS[source.coverage_status] || "Неизвестно"}{source.complete_snapshot_age_seconds != null ? <small>{reliabilityAge(source.complete_snapshot_age_seconds)}</small> : null}</span>
+            <span>{reliabilityNumber(source.database_records)}</span>
+            <span className={source.current_error ? "reliabilitySourceProblem" : "reliabilitySourceProblem muted"}>
+              {source.current_error ? (source.current_error_category || "Ошибка") : source.retry_overdue ? "Повтор просрочен" : "Нет актуальной ошибки"}
+            </span>
+            <ChevronDown className="reliabilityChevron" />
+          </summary>
+          <div className="reliabilitySourceDetails">
+            <div><span>Свежесть</span><strong>{RELIABILITY_STATUS_LABELS[source.freshness_status] || "Неизвестно"}</strong></div>
+            <div><span>Защита соединения</span><strong>{RELIABILITY_STATUS_LABELS[source.circuit_state] || "Неизвестно"}</strong></div>
+            <div><span>Последний проход</span><strong>{reliabilityNumber(source.last_pages_scanned)} стр.</strong><small>+{reliabilityNumber(source.last_items_inserted)} · обновлено {reliabilityNumber(source.last_items_updated)} · архив {reliabilityNumber(source.last_items_archived)} · ошибки карточек {reliabilityNumber(source.last_items_failed)}</small></div>
+            <div><span>Следующая попытка</span><strong>{source.next_retry_at ? (source.retry_overdue ? `Просрочена · ${reliabilityDateAge(source.next_retry_at)}` : new Date(source.next_retry_at).toLocaleString("ru-RU")) : "Не запланирована"}</strong></div>
+            {source.aliases.length > 0 && <div><span>Исторические названия</span><strong>{source.aliases.join(", ")}</strong></div>}
+            {source.current_error && <div className="reliabilityDetailError"><span>Текущая ошибка</span><strong>{source.current_error}</strong></div>}
+            {!source.current_error && source.last_historical_error && <div><span>Последняя историческая ошибка</span><strong>{source.last_historical_error}</strong><small>Закрыта более поздним успешным проходом.</small></div>}
+            {role === "admin" && backgroundJobs && source.role !== "historical_only" && <div className="reliabilitySourceActions"><button className="secondaryButton" disabled={Boolean(action)} onClick={() => runAction(`probe:${source.canonical_id}`, () => probeSourceHealth(source.canonical_id))}>Проверить источник</button></div>}
+          </div>
+        </details>)}
+        {!filteredSources.length && <div className="reliabilityEmpty"><Search /><span>Источники по выбранному фильтру не найдены.</span></div>}
+      </div>
+    </section>
+
+    {summary && <div className="reliabilityTwoColumn">
+      <section className="pageCard reliabilityGeoCard">
+        <div className="reliabilitySectionHeading"><div><span className="eyebrow">Геоданные</span><h2>GEO</h2></div><span className={`healthBadge ${geo?.paused ? "neutral" : "warn"}`}>{geo?.paused ? "На паузе" : "Активно"}</span></div>
+        <p className="reliabilityScope">{geo?.scope_ru}</p>
+        <div className="reliabilityGeoProgress"><span style={{ width: `${Math.min(100, Math.max(0, geo?.percent || 0))}%` }} /></div>
+        <div className="reliabilityGeoHeadline"><strong>{reliabilityPercent(geo?.percent)}</strong><span>{reliabilityNumber(geo?.current_geocoded)} из {reliabilityNumber(geo?.population)} с текущими координатами</span></div>
+        <div className="reliabilityMiniGrid">
+          <div><span>Требуют обработки</span><strong>{reliabilityNumber(geo?.actionable_remaining)}</strong></div>
+          <div><span>Соответствие не найдено</span><strong>{reliabilityNumber(geo?.deferred_no_match)}</strong></div>
+          <div><span>Не прошло проверку</span><strong>{reliabilityNumber(geo?.deferred_validation)}</strong></div>
+          <div><span>Ожидание сети</span><strong>{reliabilityNumber(geo?.network_wait)}</strong></div>
+          <div><span>Недостаточно данных</span><strong>{reliabilityNumber(geo?.deferred_bad_input)}</strong></div>
+          <div><span>Исторически имели GEO-снимок</span><strong>{reliabilityNumber(geo?.history_lots)}</strong></div>
+        </div>
+        {role === "admin" && <div className="reliabilityInlineActions">
+          {backgroundJobs ? <>
+            <button className="secondaryButton" disabled={Boolean(action) || geo?.paused === true} onClick={() => runAction("pause", pauseGeocoding)}>Поставить GEO на паузу</button>
+            <button className="secondaryButton" disabled={Boolean(action) || geo?.paused !== true} onClick={() => runAction("resume", resumeGeocoding)}>Возобновить GEO</button>
+          </> : <small className="operationsReadOnlyNote">Операционные действия недоступны в этом read-only deployment.</small>}
+        </div>}
+      </section>
+
+      <section className="pageCard reliabilityMapCard">
+        <div className="reliabilitySectionHeading"><div><span className="eyebrow">Публикация</span><h2>Карта</h2></div><span className={`healthBadge ${map?.status === "ok" ? "ok" : map?.status === "incident" ? "bad" : "warn"}`}>{map?.status === "ok" ? "Доставка подтверждена" : map?.status === "incident" ? "Нарушение" : "Требует проверки"}</span></div>
+        <div className="reliabilityMapHeadline"><strong>{reliabilityNumber(map?.point_count)}</strong><span>объектов · {map?.dataset_version || "нет версии"}</span></div>
+        <div className="reliabilityDeliveryChain">
+          {mapSteps.map(([title, ok]) => <div key={title} data-state={ok === true ? "ok" : ok === false ? "bad" : "unknown"}><span>{ok === true ? "✓" : ok === false ? "!" : "?"}</span><strong>{title}</strong></div>)}
+        </div>
+        <div className="reliabilityMapStats">
+          <div><span>Ожидается по БД</span><strong>{reliabilityNumber(map?.db_eligible_count)}</strong></div>
+          <div><span>В наборе карты</span><strong>{reliabilityNumber(map?.dataset_unique_lot_count)}</strong></div>
+          <div><span>Не хватает</span><strong>{reliabilityNumber(map?.missing_from_dataset_count)}</strong></div>
+          <div><span>Лишние</span><strong>{reliabilityNumber(map?.extra_in_dataset_count)}</strong></div>
+        </div>
+        {map?.manifest_error && <div className="reliabilityInlineError"><AlertCircle /><span>{map.manifest_error}</span></div>}
+        <small className="reliabilityFootnote">Проверяется цепочка БД → набор карты → S3 manifest → публичная выдача. Проверка manifest кешируется на сервере.</small>
+      </section>
+    </div>}
+
+    {summary && <div className="reliabilityTwoColumn reliabilityTwoColumn--wide">
+      <section className="pageCard">
+        <div className="reliabilitySectionHeading"><div><span className="eyebrow">Текущая выборка</span><h2>Полнота и качество данных</h2></div><strong>{reliabilityNumber(dataQuality?.current_population)} объектов</strong></div>
+        <p className="reliabilityScope">{dataQuality?.scope_ru}</p>
+        <div className="reliabilityQualityGrid">
+          {qualityMetrics.map(([title, metric]) => <article key={title} data-health={metric.percent === 0 ? "ok" : metric.percent < 5 ? "warn" : "bad"}>
+            <span>{title}</span><strong>{reliabilityNumber(metric.count)}</strong><small>{reliabilityPercent(metric.percent)}</small>
+          </article>)}
+        </div>
+        <div className="reliabilityHistoryLine"><span>Историческая база</span><strong>{reliabilityNumber(dataQuality?.historical_total)} записей</strong></div>
+      </section>
+
+      <section className="pageCard">
+        <div className="reliabilitySectionHeading"><div><span className="eyebrow">Хост</span><h2>Инфраструктура</h2></div><span className={`healthBadge ${infrastructureDegraded ? "warn" : "ok"}`}>{infrastructureDegraded ? "Есть ограничения" : "Норма"}</span></div>
+        <div className="reliabilityInfrastructureList">
+          <article><Database /><div><span>API и база данных</span><strong>{host?.api.status === "ok" && host?.database.status === "ok" ? "Готовы" : "Требуют внимания"}</strong></div></article>
+          <article><Server /><div><span>Очередь</span><strong>{host?.queue.label_ru || "Нет данных"}</strong></div></article>
+          <article><HardDrive /><div><span>Диск C:</span><strong>{host?.disk.free_gb != null ? `${number(host.disk.free_gb)} ГБ` : "Нет данных"}</strong><small>{host?.disk.status === "warning" ? "Ниже рекомендуемых 25 ГБ" : host?.disk.status === "critical" ? "Критически мало места" : "Запас диска в норме"}</small></div></article>
+          <article><ShieldCheck /><div><span>Backup</span><strong>{host?.backup.healthy ? "Проверен восстановлением" : "Требует внимания"}</strong><small>{host?.backup.age_hours != null ? reliabilityAge(host.backup.age_hours * 3600) : "нет свежего snapshot"}</small></div></article>
+          <article><Activity /><div><span>Диагностика runner</span><strong>{host?.runner_diagnostic.fresh ? "Свежая" : "Устарела"}</strong><small>{host?.runner_diagnostic.age_seconds != null ? reliabilityAge(host.runner_diagnostic.age_seconds) : "не записана"} · это не статус online/offline</small></div></article>
+        </div>
+      </section>
+    </div>}
+
+    {summary && <section className="pageCard reliabilityIntegrityCard">
+      <div className="reliabilitySectionHeading"><div><span className="eyebrow">Связи и инварианты</span><h2>Целостность данных</h2></div><span className={`healthBadge ${integrity?.critical_count ? "bad" : integrity?.warning_count ? "warn" : "ok"}`}>{integrity?.critical_count ? "Есть критические нарушения" : integrity?.warning_count ? "Есть предупреждения" : "Норма"}</span></div>
+      <div className="reliabilityIntegrityGrid">
+        <div><span>Source без Processed</span><strong>{reliabilityNumber(integrity?.source_without_processed)}</strong></div>
+        <div><span>Processed без Source</span><strong>{reliabilityNumber(integrity?.processed_without_source)}</strong></div>
+        <div><span>Source одновременно active + archived</span><strong>{reliabilityNumber(integrity?.active_and_archived_source_lots)}</strong></div>
+        <div><span>Архив без времени архивации</span><strong>{reliabilityNumber(integrity?.archived_processed_without_timestamp)}</strong></div>
+        <div><span>Некорректный порядок дат</span><strong>{reliabilityNumber((integrity?.first_seen_after_last_seen || 0) + (integrity?.application_start_after_deadline || 0) + (integrity?.archived_before_first_seen || 0))}</strong></div>
+        <div><span>Расхождения карты</span><strong>{reliabilityNumber((integrity?.map_missing_from_dataset || 0) + (integrity?.map_extra_in_dataset || 0) + (integrity?.map_tile_count_mismatch || 0) + (integrity?.map_point_count_mismatch || 0))}</strong></div>
+      </div>
+    </section>}
+
+    {role === "admin" && <section className="pageCard reliabilityDiagnosticsCard">
+      <div className="reliabilitySectionHeading"><div><span className="eyebrow">Поддержка</span><h2>Диагностика</h2></div></div>
+      <p>Диагностика не выводится огромным JSON на экран. Её можно скачать или скопировать для анализа.</p>
+      <div className="reliabilityInlineActions">
+        <button className="secondaryButton" disabled={Boolean(action)} onClick={() => void downloadDiagnostics()}><Download size={15} />Скачать diagnostics.json</button>
+        <button className="secondaryButton" disabled={Boolean(action)} onClick={() => void copyDiagnostics()}><Copy size={15} />Копировать</button>
+      </div>
+      {notice && <div className="successBox"><CheckCircle2 size={16} />{notice}</div>}
+    </section>}
+
+    {error && <State error>{error}</State>}
   </section>;
 }
 
