@@ -322,3 +322,35 @@ def test_isolation_releases_other_legacy_owner_without_deleting_its_group(contex
     assert orphan.title == "Historical group" and session.get(CanonicalLot, orphan.id) is orphan
     assert source.canonical_lot_id not in {orphan.id, shared.id}
     assert record.review_status == "approved"
+
+
+@pytest.mark.parametrize(('title','category'),[
+ ('Автомобиль УАЗ Патриот','car'),
+ ('Производственная линия для обработки древесины','equipment'),
+ ('Право требования к должнику','receivable'),
+])
+def test_exact_primary_nonproperty_title_can_correct_stale_category_without_claiming_description(context,title,category):
+    session,record,source,evidence=context
+    lot=evidence[0]['normalized'];proof=evidence[0]['verification']
+    lot.update(title=title,category=category)
+    lot['raw_data']['repair_observed_fields']=['title','category','detail_level']
+    proof['observed_fields']=['title']
+    preview=repair_verified_source_lots(session,evidence=evidence,allowed_lot_ids={record.id})
+    repair_verified_source_lots(session,evidence=evidence,allowed_lot_ids={record.id},apply=True,
+        expected_states={record.id:preview['items'][0]['expected_state']},expected_evidence_sha256=preview['evidence_sha256'])
+    session.commit()
+    assert record.title==source.title==title and record.category==source.category==category
+    assert record.description==source.description=='Земля'
+    assert record.review_status=='approved' and record.auction_status=='active'
+    assert record.is_archived and source.archive_reason=='exact_verified_source_non_property_sale'
+    assert float(record.start_price)==100 and float(source.current_price)==80
+
+
+def test_title_only_evidence_cannot_promote_a_record_into_property_scope(context):
+    session,record,_,evidence=context
+    lot=evidence[0]['normalized'];proof=evidence[0]['verification']
+    lot.update(title='Квартира',category='apartment')
+    lot['raw_data']['repair_observed_fields']=['title','category','detail_level'];proof['observed_fields']=['title']
+    with pytest.raises(ValueError,match='fresh title and description'):
+        repair_verified_source_lots(session,evidence=evidence,allowed_lot_ids={record.id})
+    assert record.title=='Земельный участок' and not session.dirty

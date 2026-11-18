@@ -13,7 +13,7 @@ import re
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 from bankrotai.connectors.etp_sources.status_normalization import _status
 from bankrotai.domain import NormalizedLot
@@ -353,16 +353,26 @@ def parse_sistematorg_detail_lots(
     else:
         decoded = html
     soup = BeautifulSoup(decoded, "html.parser")
+    headers = [node for node in soup.select('.lot_header') if node.select_one('.lot_title') is not None]
+    sentinel = 'BANKROTAI_SISTEMA_LOT_SECTION_'
+    if sentinel in decoded:
+        raise ValueError('sistematorg_reserved_section_marker')
+    for header in headers:
+        marker = _LOT_MARKER_RE.search(header.get_text(' ', strip=True))
+        if marker is None:
+            raise ValueError('sistematorg_structural_header_has_no_lot_id')
+        header.insert_before(NavigableString(f' {sentinel}{marker.group(1)} '))
     text = _clean(soup.get_text(" ", strip=True))
     if len(text) < 80:
         raise ValueError("sistematorg_detail_too_short")
 
-    all_markers = list(_LOT_MARKER_RE.finditer(text))
+    marker_pattern = re.compile(sentinel+r'(\d{1,5})\b') if headers else _LOT_MARKER_RE
+    all_markers = list(marker_pattern.finditer(text))
     declared_match = _DECLARED_LOTS_RE.search(text)
     declared_count = int(declared_match.group(1)) if declared_match else None
 
-    verified_markers: list[re.Match[str]] = []
-    for marker in all_markers:
+    verified_markers: list[re.Match[str]] = list(all_markers) if headers else []
+    for marker in ([] if headers else all_markers):
         lot_id = marker.group(1)
         probe = text[marker.end():marker.end() + 1200]
         has_number = re.search(
@@ -435,6 +445,8 @@ def parse_sistematorg_detail_lots(
             r"номер\s+лота",
             (r"наименование\s+имущества", r"сведения\s+об\s+имуществе", r"cведения\s+об\s+имуществе"),
         )
+        if headers and number_value is None:
+            raise ValueError('sistematorg_structural_section_has_no_lot_number_field')
         if number_value is not None:
             number_match = re.match(r"(\d{1,5})\b", number_value)
             if number_match is None or number_match.group(1) != lot_id:

@@ -20,6 +20,9 @@ _EQUIPMENT = re.compile(
     r"экскаватор\w*|погрузчик\w*|трактор\w*|бульдозер\w*|оргтехник\w*|мебель)\b",
     re.IGNORECASE,
 )
+_INDUSTRIAL_LINE = re.compile(
+    r"\b(?:производственн\w*\s+лини\w*|лини\w*\s+концевого\s+участка)\b", re.IGNORECASE,
+)
 
 
 def _property(text: str) -> str | None:
@@ -54,8 +57,11 @@ def explicit_nonproperty_category(title: str) -> str | None:
         return "receivable"
     if _EQUIPMENT.search(title):
         return "equipment"
-    vehicle = _VEHICLE.search(title) or _BRAND.search(title)
+    industrial_line = _INDUSTRIAL_LINE.search(title)
     property_noun = _PROPERTY_NOUN.search(title)
+    if industrial_line and (property_noun is None or industrial_line.start() < property_noun.start()):
+        return "equipment"
+    vehicle = _VEHICLE.search(title) or _BRAND.search(title)
     if vehicle and (property_noun is None or vehicle.start() < property_noun.start()):
         return "car"
     return None
