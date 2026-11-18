@@ -1832,3 +1832,46 @@ def test_reconciliation_failure_rolls_back_all_missing_archive_changes(
         after = session.scalars(select(SourceLot).order_by(SourceLot.external_id)).all()
         assert [row.missing_successful_runs for row in after] == [1, 1]
         assert all(row.is_active is True and row.is_archived is False for row in after)
+
+
+def test_explicitly_removed_source_identity_is_not_reimported_or_enriched(sessions) -> None:
+    class DetailConnector(FakeConnector):
+        capabilities = frozenset({"search", "detail_enrichment"})
+
+        def __init__(self, pages):
+            super().__init__(pages)
+            self.enrichment_calls = 0
+
+        async def enrich_lot(self, normalized):
+            self.enrichment_calls += 1
+            return normalized
+
+    removed = lot("removed-1")
+    connector = DetailConnector([[removed]])
+    with sessions.begin() as session:
+        session.add(
+            AuditLog(
+                user_id="operator",
+                action="remove_reviewed_reported_lot",
+                entity_type="lot",
+                entity_id="999",
+                metadata_json={
+                    "source_system": removed.source_system,
+                    "external_id": removed.external_id,
+                    "reason": "explicit_user_request_remove_incorrect_reviewed_lots",
+                },
+            )
+        )
+
+    service = NationwideIngestionService(sessions, connector_factory=lambda _: connector)
+    run_id = service.create_run(triggered_by=None, trigger_type="test", total_sources=1)
+    output = asyncio.run(
+        service.run(run_id, (SourceSyncSpec("test-source", {}, reconcile_missing=False),))
+    )
+
+    assert connector.enrichment_calls == 0
+    assert output["sources"][0]["items_seen"] == 1
+    assert output["sources"][0]["items_inserted"] == 0
+    with sessions() as session:
+        assert session.scalars(select(ProcessedLot)).all() == []
+        assert session.scalars(select(SourceLot)).all() == []
