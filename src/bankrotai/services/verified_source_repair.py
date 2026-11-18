@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 from bankrotai.db import LotSyncRun, SourceLot
 
-from bankrotai.services.asset_category import classify_category
+from bankrotai.services.asset_category import classify_category, explicit_nonproperty_category
 from bankrotai.services.reported_lot_repair import SOURCE_FIELDS, _repair_exact_lots
 from bankrotai.services.source_lot_exclusions import SourceLotExcludedError, excluded_ids
 from bankrotai.services.source_verification_metadata import verification_value
@@ -74,7 +74,14 @@ def repair_verified_source_lots(
         if any(lot.get(name) != proof["source_url"] for name in observed & {"source_url", "lot_url"}):
             raise ValueError("Repaired link differs from the verified source URL")
         if "category" in observed:
-            if not {"title", "description"} <= set(proof.get("observed_fields", [])):
+            proof_fields = set(proof.get("observed_fields", []))
+            negative_primary_title = (
+                "title" in proof_fields
+                and "title" in observed
+                and lot.get("category") in {"car", "equipment", "receivable"}
+                and explicit_nonproperty_category(lot.get("title", "")) == lot.get("category")
+            )
+            if not {"title", "description"} <= proof_fields and not negative_primary_title:
                 raise ValueError("Category correction requires fresh title and description")
             if lot.get("category") != classify_category(lot.get("title", ""), lot.get("description", "")):
                 raise ValueError("Category differs from primary-asset evidence")
