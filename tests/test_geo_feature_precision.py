@@ -58,3 +58,25 @@ def test_exact_cadastral_geometry_does_not_require_a_house_number():
         address='г. Мышкин, Ярославская область',lat=57.78,lon=38.45,source='nspd',confidence='high')
     assert validate_geocoding_result(exact,cadastral_number=exact.cadastral_number,
         address='г. Мышкин',region_name='Ярославская область',region_code='76')[0]
+
+
+@pytest.mark.parametrize(('address','expected'),[
+ ('г. Москва, дом 228, корпус 4','228k4'),
+ ('г. Москва, дом 228к4','228k4'),
+ ('г. Москва, улица Ленина, 228к4','228k4'),
+ ('г. Москва, дом 5, строение 2','5c2'),
+ ('г. Москва, дом 228, кв. 363','228'),
+])
+def test_building_parts_are_preserved_and_apartment_number_is_not_house(address,expected):
+    assert property_number(address)==expected
+
+
+def test_cached_wrong_building_part_or_same_number_on_another_street_is_rejected():
+    from bankrotai.services.geo_feature_precision import address_precision_rejection
+    assert address_precision_rejection('г. Москва, дом 228, корпус 4','г. Москва, дом 228, корпус 5')=='property_number_mismatch'
+    assert address_precision_rejection('г. Москва, Ленинградское шоссе, дом 228',
+        'г. Москва, Ленинградский проспект, дом 228')=='property_street_mismatch'
+    assert address_precision_rejection('г. Москва, ул. Ленина, дом 228',
+        'г. Москва, Большая Ленина улица, дом 228')=='property_street_mismatch'
+    assert address_precision_rejection('г. Москва, ул. Ленина, дом 228',
+        'г. Москва, Ленина улица, дом 228') is None

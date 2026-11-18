@@ -40,7 +40,7 @@ from bankrotai.services.geo_resilience import (
     require_provider,
 )
 from bankrotai.services.geo_feature_precision import (
-    address_precision_rejection, normalize_house, property_number, whole_locality_match,
+    address_precision_rejection, normalize_house, property_number, property_street, whole_locality_match,
 )
 
 logger = logging.getLogger(__name__)
@@ -1448,12 +1448,7 @@ class PhotonGeocoder:
         transport_successes = 0
         last_operational_category = "connection_error"
         expected = {token[:7] for token in re.findall(r"[а-яёa-z-]{5,}", address.casefold())}
-        street_match = re.search(
-            r"(?:^|[,;]\s*)(?:ул\.|улица|проспект|пр-т|переулок|пер\.|шоссе|проезд|набережная|площадь|тракт)\s*([^,;]+)",
-            address,
-            re.IGNORECASE,
-        )
-        expected_street = street_match.group(1).strip().casefold() if street_match else ""
+        expected_street = property_street(address)
         expected_house = property_number(address)
         from bankrotai.regions import normalize_region_code, region_code_from_text
 
@@ -1518,7 +1513,8 @@ class PhotonGeocoder:
                 # A street-level or settlement-level centroid must not be
                 # published as a precise apartment/house coordinate. Photon
                 # may return a plausible feature with no housenumber at all.
-                if expected_street and (not street or expected_street not in street.casefold()):
+                street_matches = bool(expected_street and property_street(street) == expected_street)
+                if expected_street and not street_matches:
                     continue
                 if expected_region and state and normalize_region_code(state) != expected_region:
                     continue
@@ -1527,14 +1523,14 @@ class PhotonGeocoder:
                 haystack = " ".join(str(value) for value in props.values()).casefold()
                 score = sum(token in haystack for token in expected)
                 score += 4 if expected_locality and expected_locality in locality_text else 0
-                score += 3 if expected_street and expected_street in street.casefold() else 0
+                score += 3 if street_matches else 0
                 score += 2 if expected_region and normalize_region_code(state) == expected_region else 0
                 score += 2 if expected_house and house == expected_house else 0
                 scored.append((score, -query_index, feature))
                 exact_candidate_found = bool(
                     expected_locality
                     and expected_locality in locality_text
-                    and (not expected_street or expected_street in street.casefold())
+                    and (not expected_street or street_matches)
                     and (not expected_region or normalize_region_code(state) == expected_region)
                     and (not expected_house or house == expected_house)
                 )
