@@ -62,8 +62,12 @@ def _property(text: str) -> str | None:
     return None
 
 
+def primary_object_title(title: str) -> str:
+    return _LOT_TITLE_PREFIX.sub("", title, count=1)
+
+
 def explicit_nonproperty_category(title: str) -> str | None:
-    title = _LOT_TITLE_PREFIX.sub("", title, count=1)
+    title = primary_object_title(title)
     if _TIMBER.search(title):
         return "commodity"
     if _CLAIM.search(title):

@@ -48,6 +48,10 @@ def has_disallowed_real_estate_terms(*values: object) -> bool:
 def is_real_estate_lot(lot: NormalizedLot) -> bool:
     from bankrotai.services.asset_category import explicit_nonproperty_category
 
+    from bankrotai.services.individual_lot_identity import unscoped_procedure_identity
+
+    if unscoped_procedure_identity(lot.source_system, lot.external_id):
+        return False
     if explicit_nonproperty_category(lot.title or ""):
         return False
     category = (lot.category or "").lower()
@@ -111,8 +115,10 @@ def is_sale_real_estate_lot(lot: NormalizedLot) -> bool:
         r"к\s+аренде\s+предлага|размер[^.]{0,100}\s+арендн\w*\s+плат)",
         text, re.IGNORECASE,
     )
+    from bankrotai.services.asset_category import primary_object_title
+
     title_is_lease = re.match(
         r"\s*(?:аренда|арендный|субаренда|(?:продажа\s+)?прав[оа]\s+аренды)\b",
-        lot.title or "", re.IGNORECASE,
+        primary_object_title(lot.title or ""), re.IGNORECASE,
     )
     return not lease_transaction and not title_is_lease and not has_disallowed_real_estate_terms(text)

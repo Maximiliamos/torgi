@@ -141,3 +141,21 @@ def test_same_global_and_dimensional_ratios_still_protect_uncertified_population
     with factory() as s:
         assert s.get(MapDataset, old_id).is_current == (expected != "published")
     engine.dispose()
+
+
+@pytest.mark.parametrize("source,identity,expected", [
+    ("sistematorg.com","sistematorg.com:12345",True),
+    ("aukcioncenter.ru","aukcioncenter.ru:12345",True),
+    ("sistematorg.com","sistematorg.com:12345:2",False),
+    ("other","other:12345",False),
+])
+def test_only_known_procedure_shapes_are_discounted_during_identity_scope_transition(source,identity,expected):
+    engine=create_engine("sqlite:///:memory:");Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        old=MapDataset(version="old-r11",published_at=datetime(2026,11,18,10))
+        new=MapDataset(version="new-r12",created_at=datetime(2026,11,19,10))
+        p=ProcessedLot(source_system=source,external_id=identity,title="Land",category="land")
+        s.add_all([old,new,p]);s.commit()
+        result=audited_transition_ids(s,previous=old,candidate=new,old_points={p.id:{"lat":57.6,"lon":39.8}},new_ids=set())
+        assert (p.id in result)==expected
+    engine.dispose()

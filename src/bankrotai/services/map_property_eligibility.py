@@ -11,6 +11,8 @@ def map_property_evidence_columns() -> tuple:
     from bankrotai.db import ProcessedLot, SourceLot
 
     return (
+        ProcessedLot.source_system.label("identity_source_system"),
+        ProcessedLot.external_id.label("identity_external_id"),
         ProcessedLot.title, ProcessedLot.category, ProcessedLot.description, ProcessedLot.address,
         SourceLot.auction_type,
         SourceLot.raw_data["typeTransaction"].as_string().label("source_transaction"),
@@ -37,7 +39,8 @@ def map_property_eligible(row: Mapping[str, Any]) -> bool:
         except ValueError:
             pass
     evidence = NormalizedLot(
-        external_id=str(row.get("id", "")), source="map_projection", source_system="map_projection",
+        external_id=str(row.get("identity_external_id") or row.get("external_id") or row.get("id", "")),
+        source="map_projection", source_system=row.get("identity_source_system") or row.get("source_system") or "map_projection",
         title=row.get("title") or "", description=row.get("description") or "",
         category=row.get("category") or "other", address=row.get("address"),
         region_slug=None, region_name=None, cadastral_number=row.get("cadastral_number"),

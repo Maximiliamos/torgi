@@ -7,13 +7,15 @@ from bankrotai.db import AuditLog, LotGeoSnapshot, ProcessedLot, SourceLot
 from bankrotai.services.geo_address_candidates import is_region_only_address
 from bankrotai.services.geo_feature_precision import address_precision_rejection
 from bankrotai.services.map_dataset_version import dataset_pipeline_revision
+from bankrotai.services.individual_lot_identity import unscoped_procedure_identity
 
 
 def audited_transition_ids(session, *, previous, candidate, old_points, new_ids):
-    """Discount only exact old geometry or a fresh, owned terminal status.
+    """Discount exact rejected geometry, owned closure or a known procedure-only ID.
 
     Missing geometry, a stale status, another revision, a changed snapshot or
-    a generic archive flag never constitutes a certificate. Unexplained losses
+    a generic archive flag never certifies a geometry/status removal. Known
+    legacy procedure IDs follow an explicit individual-identity scope change. Unexplained losses
     remain subject to the original global, source and regional coverage ratios.
     """
     if (previous is None or candidate is None or previous.published_at is None
@@ -102,4 +104,14 @@ def audited_transition_ids(session, *, previous, candidate, old_points, new_ids)
                     or audit["changes"]["auction_status"].get("after") != source.source_status):
                 continue
             accepted.add(record.id)
+    # These provider contracts require trade + lot. A procedure-only legacy
+    # row remains in the database with its history; it cannot certify a public
+    # individual property. This structural membership change applies once.
+    remaining_ids = sorted(missing-accepted)
+    for start in range(0, len(remaining_ids), 1000):
+        for lot_id, source_system, external_id in session.execute(select(
+            ProcessedLot.id, ProcessedLot.source_system, ProcessedLot.external_id,
+        ).where(ProcessedLot.id.in_(remaining_ids[start:start+1000]))):
+            if unscoped_procedure_identity(source_system, external_id):
+                accepted.add(lot_id)
     return accepted
