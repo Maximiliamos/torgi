@@ -389,10 +389,10 @@ function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: s
       <div className="pageCard">
         <h2>Инфраструктура</h2>
         <dl className="reliabilityInfra">
-          <div><dt>Диск C:</dt><dd><CheckCircle2 size={16} />{typeof diskFree === "number" ? `${diskFree.toFixed(1)} ГБ` : "Нет данных"}</dd></div>
-          <div><dt>Резервная копия</dt><dd className={host?.backup_healthy ? "" : "warn"}>{host?.backup_healthy ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}{host?.backup_healthy ? "Проверена" : "Требует внимания"}{host?.backup_age_hours != null ? ` · ${host.backup_age_hours.toFixed(1)} ч назад` : ""}</dd></div>
-          <div><dt>Диагностика Runner</dt><dd className={host?.runner_healthy ? "" : "warn"}>{host?.runner_healthy ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}{host?.runner_healthy ? "Актуальна" : "Нет свежей проверки"}</dd></div>
-          <div><dt>Карта</dt><dd className={map?.ok ? "" : "warn"}>{map?.ok ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}{map?.ok ? "Набор согласован" : "Требует внимания"}</dd></div>
+          <div><dt>Диск C:</dt><dd className={typeof diskFree === "number" && diskFree < 25 ? "warn" : ""}>{typeof diskFree !== "number" ? <AlertCircle size={16} /> : diskFree < 25 ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}{typeof diskFree === "number" ? `${diskFree.toFixed(1)} ГБ${diskFree < 15 ? " · критично" : diskFree < 25 ? " · мало места" : ""}` : "Нет данных"}</dd></div>
+          <div><dt>Резервная копия</dt><dd className={host?.backup_healthy === false ? "warn" : ""}>{host?.backup_healthy === true ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}{host?.backup_healthy === true ? "Проверена" : host?.backup_healthy === false ? "Требует внимания" : "Нет данных"}{host?.backup_age_hours != null ? ` · ${host.backup_age_hours.toFixed(1)} ч назад` : ""}</dd></div>
+          <div><dt>Диагностика Runner</dt><dd className={host?.runner_healthy === false ? "warn" : ""}>{host?.runner_healthy === true ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}{host?.runner_healthy === true ? "Актуальна" : host?.runner_healthy === false ? "Нет свежей проверки" : "Нет данных"}</dd></div>
+          <div><dt>Карта</dt><dd className={map && !map.ok ? "warn" : ""}>{map?.ok ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}{map ? (map.ok ? "Набор согласован" : "Требует внимания") : "Нет данных"}</dd></div>
         </dl>
         <div className="operationsActions reliabilityInfraActions">
           <button className="secondaryButton" onClick={() => void downloadDiagnostics()}>Скачать диагностику</button>
