@@ -228,6 +228,14 @@ def test_reliability_summary_reads_nested_operational_integrity(monkeypatch) -> 
     assert summary["integrity"]["critical_count"] == 0
     assert summary["system"]["status"] == "degraded"
     assert any("несвязанные" in reason for reason in summary["system"]["reasons"])
+    assert summary["system"]["app_version"]
+    assert summary["system"]["schema_revision"]
+    assert summary["map"]["delivery_status"] == "ok"
+    assert summary["map"]["db_ok"] is True
+    assert summary["map"]["dataset_ok"] is True
+    assert summary["map"]["public_ok"] is True
+    assert summary["map"]["mismatch_counts"] == {"missing": 0, "extra": 0, "tile_count": 0}
+    assert summary["data_quality"]["current_population"] == 1
 
 
 def test_retry_overdue_requires_unexecuted_deadline() -> None:
