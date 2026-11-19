@@ -159,3 +159,38 @@ def test_only_known_procedure_shapes_are_discounted_during_identity_scope_transi
         result=audited_transition_ids(s,previous=old,candidate=new,old_points={p.id:{"lat":57.6,"lon":39.8}},new_ids=set())
         assert (p.id in result)==expected
     engine.dispose()
+
+
+@pytest.mark.parametrize("invalid", [None, "missing_reconcile", "failed_run", "old_run", "later_metadata_write", "unknown_source_status", "wrong_binding", "negative_scope_only", "missing_counter", "stale_observation"])
+def test_regular_successful_primary_closure_retires_a_member_after_the_quality_transition(invalid):
+    from bankrotai.db import LotSyncRun, LotSyncSourceRun
+    engine=create_engine("sqlite:///:memory:");Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        previous=MapDataset(version="old-r12",published_at=datetime(2026,11,19,8))
+        candidate=MapDataset(version="next-r12",created_at=datetime(2026,11,19,12))
+        p=ProcessedLot(source_system="bidexpert.ru",external_id="bidexpert:123456",title="Land",category="land",auction_status="closed",is_archived=True)
+        c=CanonicalLot(canonical_key="bidexpert:123456",title="Land",category="land")
+        run=LotSyncRun(id="normal",trigger_type="scheduled",status="success")
+        s.add_all([previous,candidate,p,c,run]);s.flush()
+        observed=LotSyncSourceRun(sync_run_id="normal",source_system="bidexpert.ru",status="success",
+            started_at=datetime(2026,11,19,9),finished_at=datetime(2026,11,19,10))
+        source=SourceLot(canonical_lot_id=c.id,processed_lot_id=p.id,source_system="bidexpert.ru",external_id=p.external_id,
+            source_status="closed",is_archived=True,is_active=False,archive_reason="source_status",
+            last_sync_run_id="normal",last_seen_at=datetime(2026,11,19,9,30),raw_data={})
+        if invalid=="missing_reconcile":source.archive_reason="missing_from_successful_runs"
+        elif invalid=="failed_run":observed.status="failed"
+        elif invalid=="old_run":observed.started_at=datetime(2026,11,18,9)
+        elif invalid=="later_metadata_write":source.last_seen_at=datetime(2026,11,19,11)
+        elif invalid=="unknown_source_status":source.source_status="unknown"
+        elif invalid=="wrong_binding":source.external_id="bidexpert:654321"
+        elif invalid=="negative_scope_only":source.raw_data={"source_sale_eligibility":False}
+        elif invalid=="missing_counter":source.missing_successful_runs=2
+        elif invalid=="stale_observation":
+            previous.published_at=datetime(2026,9,1)
+            observed.started_at=datetime(2026,9,2,9);observed.finished_at=datetime(2026,9,2,10)
+            source.last_seen_at=datetime(2026,9,2,9,30)
+        s.add_all([observed,source]);s.commit()
+        actual=audited_transition_ids(s,previous=previous,candidate=candidate,
+            old_points={p.id:{"lat":57.6,"lon":39.8}},new_ids=set())
+        assert (actual=={p.id})==(invalid is None)
+    engine.dispose()

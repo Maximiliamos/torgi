@@ -8,10 +8,11 @@ from bankrotai.services.geo_address_candidates import is_region_only_address
 from bankrotai.services.geo_feature_precision import address_precision_rejection
 from bankrotai.services.map_dataset_version import dataset_pipeline_revision
 from bankrotai.services.individual_lot_identity import unscoped_procedure_identity
+from bankrotai.services.map_confirmed_closures import confirmed_source_closure_ids
 
 
 def audited_transition_ids(session, *, previous, candidate, old_points, new_ids):
-    """Discount exact rejected geometry, owned closure or a known procedure-only ID.
+    """Discount proven closures and one bounded correction of obsolete geometry/IDs.
 
     Missing geometry, a stale status, another revision, a changed snapshot or
     a generic archive flag never certifies a geometry/status removal. Known
@@ -19,10 +20,10 @@ def audited_transition_ids(session, *, previous, candidate, old_points, new_ids)
     remain subject to the original global, source and regional coverage ratios.
     """
     if (previous is None or candidate is None or previous.published_at is None
-            or candidate.created_at is None
-            or dataset_pipeline_revision(previous.version) != "r11"
-            or dataset_pipeline_revision(candidate.version) != "r12"):
+            or candidate.created_at is None):
         return set()
+    quality_transition = (dataset_pipeline_revision(previous.version) == "r11"
+                          and dataset_pipeline_revision(candidate.version) == "r12")
     from bankrotai.services.reported_lot_repair import _state
     from bankrotai.logic import normalize_status
 
@@ -37,7 +38,8 @@ def audited_transition_ids(session, *, previous, candidate, old_points, new_ids)
     for event in events:
         text_id = str(event.entity_id or "")
         if text_id.isascii() and text_id.isdigit() and int(text_id) in missing:
-            relevant.append((int(text_id), event))
+            if quality_transition or event.action != "geo_projection_policy_repair":
+                relevant.append((int(text_id), event))
     raw_snapshot_ids = {(event.metadata_json or {}).get("snapshot_id") for _, event in relevant
                     if event.action == "geo_projection_policy_repair"}
     snapshot_ids = {i for i in raw_snapshot_ids if isinstance(i, int) and not isinstance(i, bool)}
@@ -46,7 +48,8 @@ def audited_transition_ids(session, *, previous, candidate, old_points, new_ids)
     for start in range(0, len(ids), 1000):
         snapshots.update({g.id: g for g in session.scalars(select(LotGeoSnapshot).where(
             LotGeoSnapshot.id.in_(ids[start:start+1000])))})
-    accepted = set()
+    accepted = confirmed_source_closure_ids(session, lot_ids=missing,
+        previous_published_at=previous.published_at, candidate_created_at=candidate.created_at)
     terminal_audits = {}
     for lot_id, event in relevant:
         data = event.metadata_json or {}
@@ -107,7 +110,7 @@ def audited_transition_ids(session, *, previous, candidate, old_points, new_ids)
     # These provider contracts require trade + lot. A procedure-only legacy
     # row remains in the database with its history; it cannot certify a public
     # individual property. This structural membership change applies once.
-    remaining_ids = sorted(missing-accepted)
+    remaining_ids = sorted(missing-accepted) if quality_transition else []
     for start in range(0, len(remaining_ids), 1000):
         for lot_id, source_system, external_id in session.execute(select(
             ProcessedLot.id, ProcessedLot.source_system, ProcessedLot.external_id,
