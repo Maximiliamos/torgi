@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import requests
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from bankrotai.core import get_settings
@@ -292,7 +292,7 @@ def _current_quality(session: Session) -> dict[str, Any]:
     live = (
         ProcessedLot.duplicate_of_id.is_(None)
         & ProcessedLot.is_archived.is_(False)
-        & ProcessedLot.auction_status.notin_(tuple(ENDED_STATUSES))
+        & or_(ProcessedLot.auction_status.is_(None), ProcessedLot.auction_status.notin_(tuple(ENDED_STATUSES)))
     )
 
     def count(extra: Any | None = None) -> int:
@@ -309,7 +309,7 @@ def _current_quality(session: Session) -> dict[str, Any]:
             ProcessedLot.cadastral_number.is_(None) | (func.trim(ProcessedLot.cadastral_number) == "")
         ),
         "missing_price": count(ProcessedLot.current_price.is_(None) & ProcessedLot.start_price.is_(None)),
-        "unknown_status": count(ProcessedLot.auction_status == "unknown"),
+        "unknown_status": count(or_(ProcessedLot.auction_status.is_(None), ProcessedLot.auction_status == "unknown")),
         "missing_region": count(
             ProcessedLot.region_code.is_(None) | (func.trim(ProcessedLot.region_code) == "")
         ),
