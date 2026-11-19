@@ -20,9 +20,13 @@ def same_mets_alias_identity(left, right):
                 and native == mets_native_identity(getattr(right, "source_system", None), getattr(right, "external_id", None)))
 
 
+def publication_presence_ids(source_system, external_id):
+    native = mets_native_identity(source_system, external_id)
+    return {native, "m-ets.ru:"+native} if native else {external_id}
+
+
 def source_presence_identities(lot):
-    native = mets_native_identity(lot.source_system, lot.external_id)
-    return {native, "m-ets.ru:"+native} if native else {lot.external_id}
+    return publication_presence_ids(lot.source_system, lot.external_id)
 
 
 def resolve_mets_alias_lots(session, lots):

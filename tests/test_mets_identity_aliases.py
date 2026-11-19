@@ -198,3 +198,25 @@ def test_ingestion_presence_tracks_both_spellings_without_creating_an_alias_reco
         assert result.seen_external_ids=={"12345-1","m-ets.ru:12345-1"}
         assert s.scalar(select(func.count()).select_from(ProcessedLot))==1
         assert s.scalar(select(func.count()).select_from(SourceLot))==1
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_rejected_fresh_alias_marks_the_existing_primary_ineligible_without_losing_its_grade(batch):
+    import asyncio
+    from bankrotai.services.ingestion import NationwideIngestionService
+    from bankrotai.services.ingestion_models import SourceSyncResult
+    f=factory()
+    with f() as s:
+        p=ProcessedLot(source_system="m-ets.ru",external_id="m-ets.ru:12345-1",title="Land",category="land")
+        s.add(p);s.flush();persist_lot(s,lot(p.external_id));p.review_status="approved";s.commit();pid=p.id
+        s.add(LotSyncRun(id="reject",trigger_type="test",status="running"));s.commit()
+    service=NationwideIngestionService(f,use_gis_batch_persistence=batch)
+    result=SourceSyncResult(source_system="m-ets.ru")
+    rejected=replace(lot("12345-1"),title="Автомобиль Ford",category="car")
+    asyncio.run(service._persist_page("reject",result,[rejected]))
+    with f() as s:
+        source=s.scalar(select(SourceLot))
+        assert source.processed_lot_id==pid and source.raw_data["source_sale_eligibility"] is False
+        assert s.get(ProcessedLot,pid).review_status=="approved"
+        assert s.scalar(select(func.count()).select_from(ProcessedLot))==1
+    assert result.seen_external_ids=={"12345-1","m-ets.ru:12345-1"}

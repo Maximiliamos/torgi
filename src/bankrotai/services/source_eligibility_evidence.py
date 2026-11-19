@@ -13,6 +13,7 @@ from sqlalchemy import select
 from bankrotai.db import SourceLot, utc_now
 from bankrotai.services.asset_category import explicit_nonproperty_category
 from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
+from bankrotai.services.mets_identity_aliases import publication_presence_ids
 
 FLAG = "source_sale_eligibility"
 PROOF = "source_sale_eligibility_evidence"
@@ -86,7 +87,7 @@ def observe_rejection(result, external_id):
     if external_id not in result.seen_external_ids:
         result.items_rejected += 1
         result.items_seen += 1
-        result.seen_external_ids.add(external_id)
+        result.seen_external_ids.update(publication_presence_ids(getattr(result, "source_system", None), external_id))
     else:
         result.items_duplicates += 1
 

@@ -38,7 +38,7 @@ from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.detail_freshness import cached_detail_expired, reuse_detail_evidence, refresh_detail_evidence
 from bankrotai.services.source_eligibility_evidence import persist_exclusions, clear_exclusion, observe_rejection, partition_sale_lots
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
-from bankrotai.services.mets_identity_aliases import source_presence_identities
+from bankrotai.services.mets_identity_aliases import resolve_mets_alias_lots, source_presence_identities
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
@@ -668,6 +668,10 @@ class NationwideIngestionService:
         from bankrotai.services.source_lot_exclusions import excluded_ids
         with self.session_factory() as lookup_session:
             excluded = excluded_ids(lookup_session, result.source_system, [lot.external_id for lot in normalized_lots])
+            # Resolve before negative evidence too, so a rejected fresh primary
+            # publication cannot leave its legacy spelling on the map.
+            normalized_lots = ([lot for lot in normalized_lots if lot.external_id in excluded]
+                + resolve_mets_alias_lots(lookup_session, [lot for lot in normalized_lots if lot.external_id not in excluded]))
         evidence_lots = [lot for lot in normalized_lots if lot.external_id not in excluded]
         persist_exclusions(self.session_factory, result.source_system, evidence_lots, run_id)
         for lot in normalized_lots:
@@ -771,7 +775,6 @@ class NationwideIngestionService:
 
             if self.profile_timings:
                 event.listen(bind, "before_cursor_execute", count_statement)
-            from bankrotai.services.mets_identity_aliases import resolve_mets_alias_lots
             accepted = resolve_mets_alias_lots(session, accepted)
             if not self.use_gis_batch_persistence:
                 self._persist_page_legacy(session, run_id, result, accepted)
