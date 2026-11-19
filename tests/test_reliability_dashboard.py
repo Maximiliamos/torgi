@@ -10,6 +10,7 @@ from bankrotai.services.reliability import (
     _canonical_source,
     _current_error,
     _current_quality,
+    _retry_overdue,
     _source_status,
     reliability_summary,
 )
@@ -224,4 +225,115 @@ def test_reliability_summary_reads_nested_operational_integrity(monkeypatch) -> 
     assert summary["integrity"]["processed_without_source"] == 3
     assert summary["integrity"]["current_dataset_count"] == 1
     assert summary["integrity"]["critical_count"] == 0
-    assert summary["system"]["status"] == "ok"
+    assert summary["system"]["status"] == "degraded"
+    assert any("несвязанные" in reason for reason in summary["system"]["reasons"])
+
+
+def test_retry_overdue_requires_unexecuted_deadline() -> None:
+    from bankrotai.services.reliability import _retry_overdue
+
+    now = utc_now()
+    retry = now - timedelta(minutes=5)
+    item = SimpleNamespace(
+        next_retry_at=retry,
+        last_attempt_at=now - timedelta(hours=1),
+        last_success_at=now - timedelta(hours=1),
+        status="healthy",
+    )
+    assert _retry_overdue(item, now)
+    assert not _retry_overdue(item, now, paused=True)
+    item.last_attempt_at = now - timedelta(minutes=1)
+    assert not _retry_overdue(item, now)
+    item.last_attempt_at = None
+    item.last_success_at = now - timedelta(minutes=1)
+    assert not _retry_overdue(item, now)
+
+
+def test_retry_overdue_degrades_otherwise_fresh_source() -> None:
+    item = SimpleNamespace(
+        status="healthy", circuit_state="closed",
+        freshness_status="fresh", coverage_status="fresh",
+        last_error=None, last_failure_at=None, last_success_at=utc_now(),
+    )
+    assert _source_status(item) == "healthy"
+    assert _source_status(item, retry_overdue=True) == "degraded"
+    assert _source_status(item, retry_overdue=True, paused=True) == "paused"
+
+
+def test_never_checked_source_is_not_a_stale_failure() -> None:
+    item = SimpleNamespace(
+        status="not_checked", circuit_state="closed",
+        freshness_status="stale", coverage_status="missing",
+        last_error=None, last_failure_at=None, last_attempt_at=None, last_success_at=None,
+    )
+    assert _source_status(item) == "not_checked"
+
+
+def test_summary_critical_dates_and_host_fields_are_safe(monkeypatch) -> None:
+    from bankrotai.services.reliability import reliability_summary
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        "bankrotai.services.reliability.reliability_sources",
+        lambda session: {
+            "generated_at": utc_now().isoformat(),
+            "configured_total": 2, "scheduled_total": 2, "paused_total": 1,
+            "healthy": 1, "degraded": 0, "failed": 0, "not_checked": 0,
+            "items": [],
+        },
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.reliability.geocoding_progress",
+        lambda session: {"paused": False, "percent": 90.0, "total": 10, "geocoded": 9},
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.reliability.operations_host_status",
+        lambda session: {
+            "backup_healthy": True, "runner_healthy": False,
+            "disk": {"free_gb": 20.0, "checked_at": utc_now()},
+            "backup": {"restore_verification": "passed", "size_bytes": 500, "private_token": "DO_NOT_LEAK"},
+            "runner": {"checked_at": utc_now(), "secret_cookie": "DO_NOT_LEAK"},
+            "maintenance": {"secret": "DO_NOT_LEAK"},
+            "backup_age_hours": 1.0, "runner_age_seconds": 4_000,
+        },
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.reliability._current_quality",
+        lambda session: {"population": 10, "percentages": {}},
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.reliability._heavy_quality_bundle",
+        lambda session: (
+            {
+                "integrity": {
+                    "source_without_processed": 0,
+                    "processed_without_source": 0,
+                    "active_and_archived_source_lots": 1,
+                    "tile_count_mismatches": 0,
+                    "current_dataset_count": 1,
+                },
+                "source_date_quality": {"first_seen_after_last_seen": 1},
+            },
+            {
+                "ok": True,
+                "dataset": {"version": "v1", "status": "ready", "declared_point_count": 10, "published_at": utc_now()},
+                "point_count_matches": True, "tile_count_matches": True,
+                "missing_from_dataset_count": 0, "extra_in_dataset_count": 0,
+                "manifest": {"checked": True, "ok": True},
+            },
+        ),
+    )
+    with Session(engine) as session:
+        summary = reliability_summary(session)
+
+    assert summary["system"]["status"] == "incident"
+    assert summary["integrity"]["active_and_archived"] == 1
+    assert summary["integrity"]["date_invariants"] == 1
+    assert summary["host"]["disk"]["status"] == "warning"
+    assert summary["host"]["runner_diagnostic"]["status"] == "stale"
+    assert summary["geo"]["scope_description_ru"]
+    assert summary["generated_at"] == summary["system"]["generated_at"]
+    assert summary["generated_at"] == summary["sources"]["generated_at"]
+    assert "DO_NOT_LEAK" not in str(summary)
+    assert "maintenance" not in summary["host"]
