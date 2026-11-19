@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import os
+import re
 import threading
 import time
 from typing import Any
@@ -113,6 +114,24 @@ def _canonical_source(value: str) -> str:
     return _SOURCE_ALIASES.get(raw.casefold(), raw.casefold())
 
 
+def _safe_error(message: str | None) -> str | None:
+    """Keep diagnostic messages short and remove credential-like values."""
+    if not message:
+        return None
+    value = str(message)[:500]
+    value = re.sub(
+        r"(?i)(authorization|cookie|password|token|api[_-]?key|secret)\\s*[:=]\\s*[^\\s;&]+",
+        r"\\1=[скрыто]",
+        value,
+    )
+    value = re.sub(
+        r"(?i)([?&](?:token|key|password|access_token|signature|secret)=)[^&#\\s]+",
+        r"\\1[скрыто]",
+        value,
+    )
+    return value[:300]
+
+
 def _utc_naive(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -210,8 +229,10 @@ def reliability_sources(session: Session) -> dict[str, Any]:
                 "historical_only": source_id not in configured and source_id not in registered,
                 "paused": source_id in paused,
                 "overall_status": overall,
-                "current_error": current_error,
-                "last_historical_error": item.last_error,
+                "current_error": _safe_error(current_error),
+                "last_error": _safe_error(current_error),
+                "last_historical_error": _safe_error(item.last_historical_error),
+                "network_fingerprint": {},
                 "retry_overdue": retry_overdue,
             }
         else:
@@ -328,7 +349,6 @@ def reliability_summary(session: Session) -> dict[str, Any]:
     )
     backup_raw = host_raw.get("backup") or {}
     runner_raw = host_raw.get("runner") or {}
-    from bankrotai.core import get_settings
     settings = get_settings()
     # API / DB readiness is supported by serving this authenticated database-backed request.
     # The background queue is not probed here; avoid claiming online readiness.
