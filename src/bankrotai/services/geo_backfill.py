@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from bankrotai.services.geographic_source_identity import geographic_source_identity_condition
+
 from collections import Counter
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1447,6 +1449,7 @@ def _geocode_pending_lots_unlocked(
             .outerjoin(GeoFailure, GeoFailure.lot_id == ProcessedLot.id)
             .where(
                 ProcessedLot.duplicate_of_id.is_(None),
+                geographic_source_identity_condition(),
                 ProcessedLot.is_archived.is_(False),
                 *(
                     (ProcessedLot.id.in_(target_lot_ids),)

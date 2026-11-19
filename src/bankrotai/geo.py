@@ -2006,6 +2006,12 @@ def geocoding_result_quality_score(
 
 
 def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: CadastralObjectResult | None) -> bool:
+    from bankrotai.services.geographic_source_identity import geographic_source_identity_available
+    if not geographic_source_identity_available(session, lot, final_result):
+        lot.needs_geo_check = True
+        if final_result is not None:
+            final_result.attempts = list(final_result.attempts or []) + [{"source": "source_input_identity", "valid": False, "reason": "source_identity_unverified"}]
+        return False
     if not final_result or not final_result.lat or not final_result.lon:
         lot.needs_geo_check = True
         return False
@@ -2059,6 +2065,10 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
 
 
 def enrich_lot_geo(session: Session, lot: ProcessedLot) -> bool:
+    from bankrotai.services.geographic_source_identity import geographic_source_identity_available
+    if not geographic_source_identity_available(session, lot):
+        lot.needs_geo_check = True
+        return False
     final_result = resolve_lot_geo(
         lot.cadastral_number,
         lot.address,
