@@ -25,7 +25,7 @@ def test_grandfathered_modules_have_bounded_caps() -> None:
     # Source filter endpoint expansion is reviewed in docs/adr/2026-10-28-multi-etp-map-filters.md.
     assert caps["src/bankrotai/api.py"] == 2565
     assert caps["src/bankrotai/scrapers.py"] == 3145
-    assert caps["src/bankrotai/geo.py"] == 2190
+    assert caps["src/bankrotai/geo.py"] == 2172
     assert caps["WEB/src/features/map/MapView.tsx"] == 2038
     assert all(cap > 1000 for cap in caps.values())
 
