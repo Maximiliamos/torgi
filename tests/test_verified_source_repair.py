@@ -43,6 +43,69 @@ def context():
     engine.dispose()
 
 
+def test_status_proof_revives_inconsistent_archive_and_preview_exposes_it(context):
+    session, record, source, evidence = context
+    record.is_archived = True
+    record.archived_at = datetime(2026, 1, 1)
+    record.rating = 0.75
+    record.needs_geo_check = False
+    session.commit()
+    evidence[0]['normalized']['raw_data']['repair_observed_fields'] = ['auction_status']
+    evidence[0]['verification']['observed_fields'] = ['auction_status']
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert preview['items'][0]['changes']['is_archived'] == {'before': True, 'after': False}
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+        expected_states={record.id: preview['items'][0]['expected_state']},
+        expected_evidence_sha256=preview['evidence_sha256'])
+    assert not record.is_archived and record.archived_at is None
+    assert record.needs_geo_check
+    assert record.review_status == 'approved' and record.rating == 0.75
+    assert source.is_active and not source.is_archived
+
+
+def test_partial_price_proof_cannot_use_unobserved_payload_to_exclude_property(context):
+    session, record, source, evidence = context
+    lot = evidence[0]['normalized']
+    lot.update(title='Автомобиль', description='Оборудование', category='car', auction_status='closed')
+    lot['raw_data'].update(repair_observed_fields=['start_price'], typeTransaction={'code': 'RENT'})
+    evidence[0]['verification']['observed_fields'] = ['start_price']
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert not preview['items'][0]['exclude_from_property_map']
+    assert 'is_archived' not in preview['items'][0]['changes']
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+        expected_states={record.id: preview['items'][0]['expected_state']},
+        expected_evidence_sha256=preview['evidence_sha256'])
+    assert not record.is_archived and not source.is_archived
+    assert record.title == source.title == 'Земельный участок'
+    assert record.category == source.category == 'land'
+    assert source.raw_data.get('typeTransaction') is None
+    assert record.review_status == 'approved'
+
+
+def test_timber_correction_isolates_a_canonical_shared_with_another_property(context):
+    session, record, source, evidence = context
+    original_canonical = source.canonical_lot_id
+    other = ProcessedLot(source_system='other.ru', external_id='other:2', title='Другая недвижимость', category='land')
+    session.add(other)
+    session.flush()
+    other_source = SourceLot(source_system='other.ru', external_id='other:2', title=other.title,
+        category='land', processed_lot_id=other.id, canonical_lot_id=original_canonical)
+    session.add(other_source)
+    session.commit()
+    evidence[0]['normalized'].update(title='Лот №1 (первичные) Количество и породный состав древесины', category='commodity')
+    evidence[0]['normalized']['raw_data']['repair_observed_fields'] = ['title', 'category']
+    evidence[0]['verification']['observed_fields'] = ['title']
+    preview = repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert preview['items'][0]['isolate_canonical']
+    repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id}, apply=True,
+        expected_states={record.id: preview['items'][0]['expected_state']},
+        expected_evidence_sha256=preview['evidence_sha256'])
+    assert source.canonical_lot_id != original_canonical
+    assert other_source.canonical_lot_id == original_canonical
+    assert session.get(CanonicalLot, original_canonical).category == 'land'
+    assert record.category == 'commodity' and record.review_status == 'approved'
+
+
 def test_fresh_nonreported_source_repair_preserves_review_and_unobserved_fields(context):
     session, record, source, evidence = context
     scope = {record.id}

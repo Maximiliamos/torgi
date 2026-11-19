@@ -672,12 +672,16 @@ def apply_lot_status(session: Session, lot: ProcessedLot, new_status: str, sourc
         lot.closed_at = lot.closed_at or utc_now()
         lot.is_archived = True
         lot.archived_at = lot.archived_at or utc_now()
+    elif normalized in {"active", "scheduled"}:
+        # A fresh publisher observation can revive an archived projection even
+        # when its old textual status was already active (missing-run archive).
+        lot.is_archived = False
+        lot.archived_at = None
+        if lot.current_geo_lat is None or lot.current_geo_lon is None:
+            lot.needs_geo_check = True
     if normalized == old_status:
         return False
     lot.auction_status = normalized
-    if old_status == "closed" and normalized in {"active", "scheduled"}:
-        lot.is_archived = False
-        lot.archived_at = None
     session.add(LotStatusHistory(
         lot_id=lot.id,
         old_status=old_status,
