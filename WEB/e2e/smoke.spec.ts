@@ -305,7 +305,7 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(page.getByRole("button", { name: "Экспорт отчёта" })).toBeVisible();
   await page.screenshot({ path: "test-results/reliability-desktop-reference.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("heading", { name: "Надёжность" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Надёжность", exact: true })).toBeVisible();
   await page.screenshot({ path: "test-results/reliability-mobile-reference.png", fullPage: true });
   await page.setViewportSize({ width: 1280, height: 720 });
 
