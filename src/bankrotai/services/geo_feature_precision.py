@@ -63,3 +63,24 @@ def address_precision_rejection(query: str | None, matched: str | None) -> str |
     if street and street!=property_street(matched):
         return 'property_street_mismatch'
     return None
+
+
+def expected_locality_name(address: str | None) -> str:
+    if not address:
+        return ""
+    full = list(re.finditer(
+        r"(?:^|[,;]\s*)(?:город|деревня|село|пос[её]лок)\s+([^,;]+)",
+        address, re.IGNORECASE,
+    ))
+    short = list(re.finditer(
+        r"(?:^|[,;]\s*)(?:г|д|дер|с|п|пос|пгт)(?:\.\s*|\s+)(?![а-яё]\.)([А-ЯЁA-Z][^,;]*)",
+        address, re.IGNORECASE,
+    ))
+    candidates = [*full, *short]
+    if not candidates:
+        return ""
+    # A later explicit village is more specific than a city in the administrative
+    # prefix; numeric house/plot markers are excluded by the initial letter.
+    value = max(candidates, key=lambda item: item.start()).group(1)
+    value = re.split(r"\bРоссийская\s+Федерация\b", value, maxsplit=1, flags=re.I)[0]
+    return " ".join(value.strip(" .").split()).casefold()
