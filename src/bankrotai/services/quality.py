@@ -706,6 +706,12 @@ def list_source_health(
             if latest_failure is not None
             else state.last_error if state is not None else None
         )
+        current_failure = bool(
+            last_failure_at is not None
+            and (last_success_at is None or last_failure_at > last_success_at)
+        )
+        if not current_failure:
+            last_error = None
         freshness_age = _source_age_seconds(now, last_success_at)
         complete_age = _source_age_seconds(
             now,
@@ -762,9 +768,13 @@ def list_source_health(
                 last_failure_at=last_failure_at,
                 last_error=last_error,
                 last_error_category=(
-                    resilience.get("last_error_category")
-                    if "last_error_category" in resilience_metadata
-                    else _source_error_category(last_error)
+                    (
+                        resilience.get("last_error_category")
+                        if "last_error_category" in resilience_metadata
+                        else _source_error_category(last_error)
+                    )
+                    if current_failure
+                    else None
                 ),
                 circuit_state=str(resilience.get("circuit_state") or "closed"),
                 circuit_open_until=resilience.get("circuit_open_until"),

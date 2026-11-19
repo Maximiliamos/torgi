@@ -13,6 +13,8 @@ wait_for_stack
 request GET http://127.0.0.1:8080/health >/dev/null
 login_user >/dev/null
 authenticated_request GET http://127.0.0.1:8080/api/lots >/dev/null
+authenticated_request GET http://127.0.0.1:8080/api/reliability/summary >/dev/null
+authenticated_request GET http://127.0.0.1:8080/api/reliability/sources >/dev/null
 
 map_headers="$SMOKE_TMP_DIR/map-headers"
 map_body="$SMOKE_TMP_DIR/map-body"
