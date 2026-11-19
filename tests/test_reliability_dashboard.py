@@ -11,6 +11,7 @@ from bankrotai.services.reliability import (
     _current_error,
     _current_quality,
     _source_status,
+    reliability_summary,
 )
 
 
@@ -151,3 +152,76 @@ def test_source_health_does_not_expose_old_error_after_newer_success() -> None:
     assert item.status == "healthy"
     assert item.last_error is None
     assert item.last_error_category is None
+
+
+def test_reliability_summary_reads_nested_operational_integrity(monkeypatch) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        "bankrotai.services.reliability.reliability_sources",
+        lambda session: {
+            "generated_at": utc_now().isoformat(),
+            "configured_total": 1,
+            "registered_total": 1,
+            "monitored_total": 1,
+            "paused_total": 0,
+            "healthy": 1,
+            "degraded": 0,
+            "failed": 0,
+            "not_checked": 0,
+            "items": [],
+        },
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.reliability.geocoding_progress",
+        lambda session: {"paused": False, "percent": 100.0, "geocoded": 1},
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.reliability.operations_host_status",
+        lambda session: {
+            "backup_healthy": True,
+            "runner_healthy": True,
+            "disk": {"free_gb": 100.0},
+        },
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.reliability._current_quality",
+        lambda session: {"population": 1, "percentages": {}},
+    )
+    monkeypatch.setattr(
+        "bankrotai.services.reliability._heavy_quality_bundle",
+        lambda session: (
+            {
+                "integrity": {
+                    "source_without_processed": 2,
+                    "processed_without_source": 3,
+                    "current_dataset_count": 1,
+                    "tile_count_mismatches": 0,
+                }
+            },
+            {
+                "ok": True,
+                "dataset": {
+                    "version": "test-s3",
+                    "status": "ready",
+                    "declared_point_count": 1,
+                    "published_at": utc_now(),
+                },
+                "point_count_matches": True,
+                "tile_count_matches": True,
+                "missing_from_dataset_count": 0,
+                "extra_in_dataset_count": 0,
+                "pending_post_dataset_missing_count": 0,
+                "pending_post_dataset_extra_count": 0,
+                "manifest": {"checked": True, "ok": True},
+            },
+        ),
+    )
+    with Session(engine) as session:
+        summary = reliability_summary(session)
+
+    assert summary["integrity"]["source_without_processed"] == 2
+    assert summary["integrity"]["processed_without_source"] == 3
+    assert summary["integrity"]["current_dataset_count"] == 1
+    assert summary["integrity"]["critical_count"] == 0
+    assert summary["system"]["status"] == "ok"
