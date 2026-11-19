@@ -351,18 +351,18 @@ def _sync_source_lot(
     elif source_lot.canonical_lot_id != canonical.id and preferred_key.startswith(("cadastral:", "efrsb:", "case:")):
         source_lot.canonical_lot_id = canonical.id
 
-    source_lot.source_url = normalized.source_url or normalized.lot_url
-    source_lot.lot_url = normalized.lot_url
+    source_lot.source_url = normalized.source_url or normalized.lot_url or source_lot.source_url
+    source_lot.lot_url = normalized.lot_url or source_lot.lot_url
     source_lot.etp_url = _raw_value(raw, "etp_url")
-    source_lot.title = normalized.title
-    source_lot.description = normalized.description
-    source_lot.category = normalized.category
+    source_lot.title = normalized.title or source_lot.title
+    source_lot.description = normalized.description or source_lot.description
+    source_lot.category = normalized.category or source_lot.category
     source_lot.region_code = normalize_region_code(
         str(raw.get("region_code") or normalized.region_name or normalized.region_slug or "")
     )
-    source_lot.region_name = normalized.region_name
-    source_lot.address = normalized.address
-    source_lot.cadastral_number = normalized.cadastral_number
+    source_lot.region_name = normalized.region_name or source_lot.region_name
+    source_lot.address = normalized.address or source_lot.address
+    source_lot.cadastral_number = normalized.cadastral_number or source_lot.cadastral_number
     source_lot.start_price = _to_decimal(normalized.start_price)
     source_lot.current_price = _to_decimal(normalized.current_price)
     source_lot.source_status = normalized.auction_status
@@ -763,6 +763,28 @@ def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: 
                 source=normalized.source or "import",
             ))
     else:
+        # A review records a user's decision, not a freeze of primary facts.
+        if (processed.review_status is not None
+                and processed.source_system == normalized.source_system
+                and processed.external_id == normalized.external_id):
+            from bankrotai.services.source_fact_refresh import GEO_INPUT_FIELDS, SOURCE_FACT_FIELDS
+            previous_inputs = tuple(getattr(processed, name) for name in GEO_INPUT_FIELDS)
+            for name in SOURCE_FACT_FIELDS - {"region_code", "cadastral_numbers"}:
+                value = getattr(normalized, name)
+                if value not in (None, "", []):
+                    setattr(processed, name, value)
+            if normalized.raw_data.get("cadastral_numbers"):
+                processed.cadastral_numbers = normalized.raw_data["cadastral_numbers"]
+            region_code = normalize_region_code(str(normalized.raw_data.get("region_code") or ""))
+            if region_code:
+                processed.region_code = region_code
+            if tuple(getattr(processed, name) for name in GEO_INPUT_FIELDS) != previous_inputs:
+                processed.needs_geo_check = True
+                processed.geo_input_hash = None
+                processed.current_geo_lat = processed.current_geo_lon = None
+                processed.current_geo_source = processed.current_geo_confidence = None
+                processed.current_geo_observed_at = None
+
         # Обновляем существующий лот, если он еще не прошел ручную проверку
         if processed.review_status is None:
             previous_geo_input = (

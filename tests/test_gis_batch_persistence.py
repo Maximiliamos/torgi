@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
 
+import pytest
+
 from sqlalchemy import create_engine, event, func, select, update
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -131,7 +133,7 @@ def test_batch_shared_cadastre_without_same_publication_keeps_sales_separate() -
         assert session.scalar(select(func.count()).select_from(CanonicalLot)) == 2
 
 
-def test_batch_update_preserves_manually_reviewed_processed_lot() -> None:
+def test_batch_update_refreshes_source_facts_and_preserves_manual_review() -> None:
     factory = sessions()
     with factory() as session:
         add_run(session, "run-1")
@@ -152,7 +154,10 @@ def test_batch_update_preserves_manually_reviewed_processed_lot() -> None:
 
         session.refresh(processed)
         source = session.scalar(select(SourceLot))
-        assert processed.title == "Проверенное название"
+        assert processed.title == "Новое название источника"
+        assert processed.review_status == "approved"
+        status_events = session.scalars(select(LotStatusHistory).where(LotStatusHistory.lot_id == processed.id)).all()
+        assert status_events[-1].new_status == "closed"
         assert float(processed.current_price or 0) == 450_000
         assert processed.auction_status == "closed"
         assert processed.is_archived is True
@@ -522,3 +527,43 @@ def test_shallow_batch_refresh_does_not_erase_existing_detailed_address():
         assert processed.geo_input_hash == "validated-address-fingerprint"
         assert processed.needs_geo_check is False
 
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_reviewed_facts_refresh_without_losing_grade_sparse_details_or_financial_inputs(batch):
+    factory = sessions()
+    with factory() as session:
+        add_run(session, "initial")
+        original = make_lot("reviewed-refresh")
+        persist_lot(session, original)
+        row = session.scalar(select(ProcessedLot))
+        row.review_status, row.rating = "maybe", 8.25
+        row.monthly_fixed_rent, row.monthly_opex = 12345, 567
+        row.current_geo_lat, row.current_geo_lon = 57.6, 39.8
+        row.current_geo_source, row.current_geo_confidence = "nspd", 0.99
+        row.current_geo_observed_at = datetime(2026, 1, 1)
+        row.geo_input_hash, row.needs_geo_check = "old-hash", False
+        session.commit()
+        changed = make_lot("reviewed-refresh")
+        changed.title = "Обновленное название первичного источника"
+        changed.address = "Новый адрес источника, дом 15"
+        changed.cadastral_number = None
+        changed.raw_data.pop("cadastral_numbers", None)
+        changed.area = None
+        changed.monthly_fixed_rent, changed.monthly_opex = 999999, 888888
+        add_run(session, "refresh")
+        if batch:
+            persist_changed_lots_batch(session, [changed], "refresh")
+        else:
+            persist_lot(session, changed)
+        session.commit()
+        session.refresh(row)
+        assert row.title == changed.title and row.address == changed.address
+        assert row.cadastral_number == original.cadastral_number and row.area == original.area
+        source = session.scalar(select(SourceLot))
+        assert source.cadastral_number == original.cadastral_number
+        assert row.review_status == "maybe" and row.rating == 8.25
+        assert float(row.monthly_fixed_rent) == 12345 and float(row.monthly_opex) == 567
+        assert row.needs_geo_check and row.geo_input_hash is None
+        assert row.current_geo_lat is None and row.current_geo_lon is None
+        assert row.current_geo_source is None and row.current_geo_observed_at is None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from bankrotai.services.source_enum import source_enum_text
+from bankrotai.services.source_fact_refresh import SOURCE_FACT_FIELDS, MANUAL_FINANCIAL_FIELDS
 
 from dataclasses import dataclass
 from typing import Any
@@ -41,7 +42,7 @@ def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) 
     now = utc_now()
     terminal = normalized_status == "closed"
     current = normalized_status in {"active", "scheduled"}
-    return {
+    values = {
         "external_id": lot.external_id,
         "source": lot.source,
         "source_system": lot.source_system,
@@ -106,6 +107,17 @@ def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) 
         "last_update": utc_now(),
     }
 
+    if existing is not None:
+        # Sparse catalogue responses do not establish that an old fact vanished.
+        for name in SOURCE_FACT_FIELDS:
+            if name in values and values[name] in (None, "", []):
+                values[name] = getattr(existing, name)
+        if existing.review_status is not None:
+            for name in MANUAL_FINANCIAL_FIELDS:
+                values[name] = getattr(existing, name)
+    return values
+
+
 
 def _source_values(
     lot: NormalizedLot,
@@ -131,7 +143,7 @@ def _source_values(
         is_active = False
         if not is_archived:
             archive_reason = "source_status_unverified"
-    return {
+    values = {
         "canonical_lot_id": canonical_lot_id,
         "processed_lot_id": processed_lot_id,
         "source_system": lot.source_system,
@@ -208,6 +220,12 @@ def _source_values(
         "archive_reason": archive_reason,
         "missing_successful_runs": 0,
     }
+
+    if existing is not None:
+        for name in SOURCE_FACT_FIELDS:
+            if name in values and values[name] in (None, "", []):
+                values[name] = getattr(existing, name, values[name])
+    return values
 
 
 def persist_changed_lots_batch(
@@ -402,33 +420,11 @@ def _persist_changed_lots_chunk(
 
     old_status_by_id = {external_id: row.auction_status for external_id, row in existing_processed.items()}
     old_price_by_id = {external_id: row.current_price for external_id, row in existing_processed.items()}
-    protected_ids = {external_id for external_id, row in existing_processed.items() if row.review_status is not None}
     processed_values = [_processed_values(lot, existing_processed.get(lot.external_id)) for lot in lots]
     processed_statement = insert_factory(ProcessedLot).values(processed_values)
     processed_excluded = processed_statement.excluded
     immutable_processed = {"source_system", "external_id", "id", "created_at", "review_status"}
-    reviewed_fields = {
-        "title",
-        "description",
-        "category",
-        "region_slug",
-        "region_name",
-        "region_code",
-        "address",
-        "cadastral_number",
-        "cadastral_numbers",
-        "area",
-        "object_name",
-        "property_type",
-        "total_area_gba",
-        "gla",
-        "land_area",
-        "floors",
-        "year_built",
-        "legal_status",
-        "encumbrances",
-        "technical_condition",
-    }
+    reviewed_fields = MANUAL_FINANCIAL_FIELDS
     processed_updates = {
         column.name: (
             case(
@@ -442,7 +438,6 @@ def _persist_changed_lots_chunk(
         if column.name not in immutable_processed and column.name in processed_values[0]
     }
     geo_input_changed = and_(
-        ProcessedLot.review_status.is_(None),
         or_(
             ProcessedLot.address.is_distinct_from(processed_excluded.address),
             ProcessedLot.cadastral_number.is_distinct_from(processed_excluded.cadastral_number),
@@ -492,7 +487,7 @@ def _persist_changed_lots_chunk(
     history_values = []
     for lot, proposed in zip(lots, processed_values, strict=True):
         old_status = old_status_by_id.get(lot.external_id)
-        new_status = old_status if lot.external_id in protected_ids else proposed["auction_status"]
+        new_status = proposed["auction_status"]
         if new_status and new_status != old_status:
             history_values.append(
                 {
