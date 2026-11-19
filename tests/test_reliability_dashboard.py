@@ -152,6 +152,7 @@ def test_source_health_does_not_expose_old_error_after_newer_success() -> None:
 
     assert item.status == "healthy"
     assert item.last_error is None
+    assert item.last_historical_error == "old timeout"
     assert item.last_error_category is None
 
 
@@ -337,3 +338,15 @@ def test_summary_critical_dates_and_host_fields_are_safe(monkeypatch) -> None:
     assert summary["generated_at"] == summary["sources"]["generated_at"]
     assert "DO_NOT_LEAK" not in str(summary)
     assert "maintenance" not in summary["host"]
+
+
+def test_reliability_message_redaction() -> None:
+    from bankrotai.services.reliability import _safe_error
+
+    error = "Request failed authorization: my-super-secret token=abc123?key=hi"
+    redacted = _safe_error(error)
+    assert redacted
+    assert "my-super-secret" not in redacted
+    assert "abc123" not in redacted
+    assert "token=[скрыто]" in redacted
+    assert _safe_error(None) is None
