@@ -1,8 +1,24 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type APIRequestContext, type APIResponse, type Page, type TestInfo } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
 
 test.skip(process.env.E2E_PRODUCTION_AUDIT !== "1",
   "Real production acceptance is only enabled in the dedicated post-deploy workflow.");
+
+async function maskSessionCookies(request: APIRequestContext): Promise<void> {
+  if (process.env.GITHUB_ACTIONS !== "true") return;
+  for (const cookie of (await request.storageState()).cookies) {
+    if (cookie.value) console.log("::add-mask::" + cookie.value);
+  }
+}
+
+async function authenticatedGet(request: APIRequestContext, path: string): Promise<APIResponse> {
+  try {
+    return await request.get(path, { headers: { "Cache-Control": "no-store" }, timeout: 30_000 });
+  } catch {
+    // Playwright's raw error includes the Cookie header. Never serialize it.
+    throw new Error("Authenticated production GET failed or timed out: " + path);
+  }
+}
 
 async function logIn(page: Page, testInfo: TestInfo): Promise<void> {
   // Preserve pre-login evidence before a test-wide timeout prevents artifacts.
@@ -46,7 +62,10 @@ async function logIn(page: Page, testInfo: TestInfo): Promise<void> {
   const navigate = page.getByRole("button", { name: "Надёжность", exact: true });
   const login = page.getByRole("heading", { name: "Вход", exact: true });
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    if (await navigate.isVisible().catch(() => false)) return;
+    if (await navigate.isVisible().catch(() => false)) {
+      await maskSessionCookies(page.context().request);
+      return;
+    }
     if (await login.isVisible().catch(() => false)) break;
     await page.waitForTimeout(500);
   }
@@ -57,6 +76,7 @@ async function logIn(page: Page, testInfo: TestInfo): Promise<void> {
   await page.getByLabel("Пароль").fill(password);
   await page.getByRole("button", { name: "Войти", exact: true }).click();
   await expect(navigate).toBeVisible({ timeout: 40_000 });
+  await maskSessionCookies(page.context().request);
 }
 
 type ReliabilitySource = {
@@ -88,8 +108,8 @@ test("Reliability data and layout: desktop, tablet and mobile", async ({ page },
   await expect(panel.getByRole("heading", { name: "GEO · координаты" })).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Карта: доставка и целостность" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Экспорт отчёта" })).toBeEnabled();
-  const summaryResponse = await page.context().request.get("/api/reliability/summary", { timeout: 30_000 });
-  const sourcesResponse = await page.context().request.get("/api/reliability/sources", { timeout: 30_000 });
+  const summaryResponse = await authenticatedGet(page.context().request, "/api/reliability/summary");
+  const sourcesResponse = await authenticatedGet(page.context().request, "/api/reliability/sources");
   expect(summaryResponse.status()).toBe(200);
   expect(sourcesResponse.status()).toBe(200);
   const summary = await summaryResponse.json() as ReliabilitySummary;
@@ -159,14 +179,22 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ request }, te
     data: { username: process.env.E2E_USERNAME || "reader", password }, timeout: 30_000,
   });
   expect(login.status()).toBe(200);
+  await maskSessionCookies(request);
   const timings: number[] = [];
   const networkTimes: number[] = [];
   let firstServerMs: number | null = null;
   for (let i = 0; i < 22; i += 1) {
     const start = performance.now();
-    const response = await request.get("/api/reliability/summary", {
-      headers: { "Cache-Control": "no-store" }, timeout: 30_000,
-    });
+    let response: APIResponse;
+    try {
+      response = await authenticatedGet(request, "/api/reliability/summary");
+    } catch {
+      await writeFile(testInfo.outputPath("reliability-p95-incomplete.json"), JSON.stringify({
+        failedSampleIndex: i, firstServerMs, completedWarmSamples: timings,
+        completedNetworkSamples: networkTimes, acceptancePassed: false,
+      }, null, 2));
+      throw new Error("Reliability public request timed out or failed at sample " + i);
+    }
     const networkMs = performance.now() - start;
     expect(response.status()).toBe(200);
     const header = response.headers()["server-timing"] || "";
@@ -174,6 +202,7 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ request }, te
     expect(match, "Production response must expose backend handler latency").not.toBeNull();
     const serverMs = Number(match![1]);
     expect(Number.isFinite(serverMs)).toBe(true);
+    console.log("Reliability sample " + i + ": server=" + serverMs + "ms; network=" + Math.round(networkMs) + "ms");
     if (i === 0) firstServerMs = serverMs;
     else {
       timings.push(serverMs);
