@@ -1,4 +1,5 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 
 test.skip(process.env.E2E_PRODUCTION_AUDIT !== "1",
   "Real production acceptance is only enabled in the dedicated post-deploy workflow.");
@@ -8,6 +9,11 @@ async function logIn(page: Page, testInfo: TestInfo): Promise<void> {
   // Paths only: query strings, headers, cookies and bodies may contain secrets.
   const navigation: { event: string; origin: string; path: string; status?: number; error?: string }[] = [];
   const relevant = (kind: string) => ["document", "script", "stylesheet"].includes(kind);
+  const requestListener = (request: import("@playwright/test").Request) => {
+    if (!relevant(request.resourceType())) return;
+    const url = new URL(request.url());
+    navigation.push({ event: "request", origin: url.origin, path: url.pathname });
+  };
   const responseListener = (response: import("@playwright/test").Response) => {
     if (!relevant(response.request().resourceType())) return;
     const url = new URL(response.url());
@@ -18,19 +24,22 @@ async function logIn(page: Page, testInfo: TestInfo): Promise<void> {
     const url = new URL(request.url());
     navigation.push({ event: "failed", origin: url.origin, path: url.pathname, error: request.failure()?.errorText });
   };
+  page.on("request", requestListener);
   page.on("response", responseListener);
   page.on("requestfailed", failureListener);
   try {
     await page.goto("/", { waitUntil: "domcontentloaded", timeout: 45_000 });
   } catch (error) {
+    const evidencePath = testInfo.outputPath("pre-login-navigation.json");
+    await writeFile(evidencePath, JSON.stringify(navigation, null, 2));
+    console.log("Pre-login navigation: " + JSON.stringify(navigation));
     await testInfo.attach("pre-login-navigation.json", {
-      body: Buffer.from(JSON.stringify(navigation, null, 2)), contentType: "application/json",
+      path: evidencePath, contentType: "application/json",
     });
-    await testInfo.attach("pre-login-screen.png", {
-      body: await page.screenshot({ timeout: 5_000 }).catch(() => Buffer.alloc(0)), contentType: "image/png",
-    });
+    await page.screenshot({ path: testInfo.outputPath("pre-login-screen.png"), timeout: 5_000 }).catch(() => undefined);
     throw error;
   } finally {
+    page.off("request", requestListener);
     page.off("response", responseListener);
     page.off("requestfailed", failureListener);
   }
@@ -140,15 +149,22 @@ test("Reliability data and layout: desktop, tablet and mobile", async ({ page },
   await expect(panel.locator(".rel-tab--all")).toHaveAttribute("aria-pressed", "true");
 });
 
-test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testInfo) => {
+test("Reliability summary server-side warm p95 <= 500ms", async ({ request }, testInfo) => {
   test.setTimeout(120_000);
-  await logIn(page, testInfo);
+  // Measure the authenticated API independently of browser navigation. The
+  // preceding test covers the real browser login and all responsive layouts.
+  const password = process.env.E2E_PASSWORD;
+  if (!password) throw new Error("E2E_PASSWORD is required for production acceptance");
+  const login = await request.post("/api/auth/login", {
+    data: { username: process.env.E2E_USERNAME || "reader", password }, timeout: 30_000,
+  });
+  expect(login.status()).toBe(200);
   const timings: number[] = [];
   const networkTimes: number[] = [];
   let firstServerMs: number | null = null;
   for (let i = 0; i < 22; i += 1) {
     const start = performance.now();
-    const response = await page.context().request.get("/api/reliability/summary", {
+    const response = await request.get("/api/reliability/summary", {
       headers: { "Cache-Control": "no-store" }, timeout: 30_000,
     });
     const networkMs = performance.now() - start;
@@ -179,9 +195,9 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testI
   console.log("Reliability production warm p95 (server ms): " + result.warmP95ServerMs
     + "; cold server ms: " + result.firstServerMs
     + "; warm network p95 ms: " + result.warmP95NetworkMs);
-  await testInfo.attach("reliability-p95-production.json", {
-    body: Buffer.from(JSON.stringify(result, null, 2)), contentType: "application/json",
-  });
+  const metricsPath = testInfo.outputPath("reliability-p95-production.json");
+  await writeFile(metricsPath, JSON.stringify(result, null, 2));
+  await testInfo.attach("reliability-p95-production.json", { path: metricsPath, contentType: "application/json" });
   expect(result.warmP95ServerMs).toBeLessThanOrEqual(500);
   expect(result.overallP95ServerMs).toBeLessThanOrEqual(500);
 });
