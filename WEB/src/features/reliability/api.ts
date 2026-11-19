@@ -36,11 +36,17 @@ export type ReliabilitySourcesResponse = {
 export type ReliabilitySummary = {
   schema_version: number;
   generated_at: string;
-  system: { status: "ok" | "degraded" | "incident" | string; reasons: string[]; generated_at?: string; deployment_sha: string };
+  system: { status: "ok" | "degraded" | "incident" | string; reasons: string[]; generated_at?: string; deployment_sha: string; app_version?: string; schema_revision?: string };
   sources: Omit<ReliabilitySourcesResponse, "items">;
-  geo: OperationsProgress["geocoding"] & { scope_description_ru?: string };
+  geo: OperationsProgress["geocoding"] & { scope_description_ru?: string; population?: number; current_geocoded?: number; actionable?: number; bad_input?: number };
   map: {
     ok: boolean;
+    delivery_status?: "ok" | "degraded" | "failed" | "not_checked";
+    db_ok?: boolean;
+    dataset_ok?: boolean;
+    s3_manifest_ok?: boolean | null;
+    public_ok?: boolean | null;
+    mismatch_counts?: { missing: number; extra: number; tile_count: number };
     dataset_version?: string | null;
     dataset_status?: string | null;
     point_count?: number | null;
@@ -74,6 +80,7 @@ export type ReliabilitySummary = {
   };
   data_quality: {
     population: number;
+    current_population?: number;
     missing_address: number;
     missing_cadastre: number;
     missing_price: number;

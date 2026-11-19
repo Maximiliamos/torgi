@@ -228,6 +228,14 @@ def test_reliability_summary_reads_nested_operational_integrity(monkeypatch) -> 
     assert summary["integrity"]["critical_count"] == 0
     assert summary["system"]["status"] == "degraded"
     assert any("несвязанные" in reason for reason in summary["system"]["reasons"])
+    assert summary["system"]["app_version"]
+    assert summary["system"]["schema_revision"]
+    assert summary["map"]["delivery_status"] == "ok"
+    assert summary["map"]["db_ok"] is True
+    assert summary["map"]["dataset_ok"] is True
+    assert summary["map"]["public_ok"] is True
+    assert summary["map"]["mismatch_counts"] == {"missing": 0, "extra": 0, "tile_count": 0}
+    assert summary["data_quality"]["current_population"] == 1
 
 
 def test_retry_overdue_requires_unexecuted_deadline() -> None:
@@ -374,3 +382,95 @@ def test_paused_configured_source_keeps_denominator(monkeypatch) -> None:
     assert rows[0]["configured"]
     assert rows[0]["paused"]
     assert rows[0]["overall_status"] == "paused"
+
+
+
+def test_bounded_reliability_snapshot_cache(monkeypatch) -> None:
+    import bankrotai.services.reliability as module
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    seen: list[float] = []
+    tick = [10_000.0]
+
+    def uncached(session):
+        seen.append(tick[0])
+        return {"generated_at": str(len(seen)), "system": {"status": "degraded"}}
+
+    monkeypatch.setattr(module, "_summary_cache_enabled", lambda session: True)
+    monkeypatch.setattr(module, "_reliability_summary_uncached", uncached)
+    monkeypatch.setattr(module.time, "monotonic", lambda: tick[0])
+    monkeypatch.setattr(module, "_SUMMARY_CACHE", {"at": 0.0, "snapshot": None})
+    with Session(engine) as session:
+        first = module.reliability_summary(session)
+        first["system"]["status"] = "incident"  # Client mutation must not leak.
+        tick[0] += 30.0
+        second = module.reliability_summary(session)
+        assert second["generated_at"] == "1"
+        assert second["system"]["status"] == "degraded"
+        tick[0] += 16.0
+        third = module.reliability_summary(session)
+        assert third["generated_at"] == "2"
+    assert len(seen) == 2
+
+
+def test_snapshot_cache_not_used_outside_production_postgres(monkeypatch) -> None:
+    import bankrotai.services.reliability as module
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        assert module._summary_cache_enabled(session) is False
+
+
+
+def test_manifest_verification_does_not_block_reliability_handler(monkeypatch) -> None:
+    from threading import Event
+    import time
+
+    import bankrotai.services.reliability as module
+
+    started = Event()
+    release = Event()
+    calls = []
+
+    def slow_check(dataset):
+        calls.append(dataset["version"])
+        started.set()
+        assert release.wait(timeout=5.0)
+        return {"checked": True, "ok": True, "version": dataset["version"]}
+
+    monkeypatch.setattr(
+        module, "get_settings",
+        lambda: SimpleNamespace(map_object_store_public_base_url="https://example.test/map"),
+    )
+    monkeypatch.setattr(module, "_quick_public_manifest", slow_check)
+    monkeypatch.setattr(
+        module, "_MANIFEST_CACHE", {"at": 0.0, "key": "", "result": None, "running": False},
+    )
+    dataset = {"version": "test-safe-v1"}
+    begun = time.monotonic()
+    first = module._cached_public_manifest(dataset)
+    duration = time.monotonic() - begun
+    assert duration < 0.5
+    assert first["checked"] is False
+    assert started.wait(timeout=2.0)
+    assert module._cached_public_manifest(dataset)["checked"] is False
+    assert len(calls) == 1
+    release.set()
+    for _ in range(100):
+        current = module._cached_public_manifest(dataset)
+        if current.get("checked"):
+            break
+        time.sleep(0.01)
+    assert current == {"checked": True, "ok": True, "version": "test-safe-v1"}
+    assert len(calls) == 1
+    # After a dataset revision, old successful manifest evidence is invalid.
+    assert module._cached_public_manifest({"version": "test-safe-v2"})["checked"] is False
+    for _ in range(100):
+        next_result = module._cached_public_manifest({"version": "test-safe-v2"})
+        if next_result.get("checked"):
+            break
+        time.sleep(0.01)
+    assert next_result["checked"] is True
+    assert len(calls) == 2

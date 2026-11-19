@@ -1,6 +1,7 @@
 """Read-only aggregate model for the Reliability dashboard."""
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import os
 import re
@@ -14,8 +15,9 @@ import requests
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from bankrotai import __version__
 from bankrotai.core import get_settings
-from bankrotai.db import AppSetting, ProcessedLot, utc_now
+from bankrotai.db import AppSetting, ProcessedLot, SCHEMA_REVISION, utc_now
 from bankrotai.services.geo_backfill import geocoding_progress
 from bankrotai.services.operations_status import operations_host_status
 from bankrotai.services.quality import (
@@ -52,6 +54,23 @@ _SOURCE_DISPLAY_RU = {
 _HEAVY_CACHE_LOCK = threading.Lock()
 _HEAVY_CACHE_TTL_SECONDS = 300.0
 _HEAVY_CACHE: dict[str, Any] = {"at": 0.0, "operational": None, "map": None}
+
+# The dashboard refreshes every 30s. Reuse the same consistent snapshot
+# briefly rather than repeating expensive aggregate SQL on every browser poll.
+# This cache is per-process, bounded to one snapshot, and never written to DB.
+_SUMMARY_CACHE_LOCK = threading.Lock()
+_SUMMARY_CACHE_TTL_SECONDS = 45.0
+_SUMMARY_CACHE: dict[str, Any] = {"at": 0.0, "snapshot": None}
+
+
+def _summary_cache_enabled(session: Session) -> bool:
+    bind = session.get_bind()
+    return bool(
+        bind is not None
+        and bind.dialect.name == "postgresql"
+        and get_settings().is_production
+    )
+
 
 
 def _quick_public_manifest(dataset: dict[str, Any] | None) -> dict[str, Any]:
@@ -90,23 +109,78 @@ def _quick_public_manifest(dataset: dict[str, Any] | None) -> dict[str, Any]:
         return {"checked": True, "ok": False, "error": f"{exc.__class__.__name__}: public_manifest_request_failed"}
 
 
+# Public object-store checks are performed in a short-lived background daemon,
+# never inside the interactive /api/reliability/summary request. The page remains
+# explicitly 'not checked' until a result for the current dataset is available.
+_MANIFEST_CACHE_LOCK = threading.Lock()
+_MANIFEST_CACHE: dict[str, Any] = {
+    "at": 0.0, "key": "", "result": None, "running": False,
+}
+
+
+def _refresh_manifest(dataset: dict[str, Any], key: str) -> None:
+    try:
+        result = _quick_public_manifest(dataset)
+    except Exception:
+        result = {"checked": True, "ok": False, "reason": "public_manifest_check_failed"}
+    with _MANIFEST_CACHE_LOCK:
+        if _MANIFEST_CACHE["key"] == key:
+            _MANIFEST_CACHE.update({
+                "at": time.monotonic(), "result": result, "running": False,
+            })
+
+
+def _cached_public_manifest(dataset: dict[str, Any] | None) -> dict[str, Any]:
+    version = str((dataset or {}).get("version") or "")
+    base_url = get_settings().map_object_store_public_base_url or ""
+    if not version or not base_url:
+        return {"checked": False, "ok": None, "reason": "public_manifest_not_configured"}
+    key = f"{base_url.rstrip('/')}/{version}"
+    launch = False
+    with _MANIFEST_CACHE_LOCK:
+        if _MANIFEST_CACHE["key"] != key:
+            _MANIFEST_CACHE.update({"key": key, "at": 0.0, "result": None, "running": False})
+        result = _MANIFEST_CACHE.get("result")
+        if isinstance(result, dict) and time.monotonic() - float(_MANIFEST_CACHE["at"]) < 300:
+            return deepcopy(result)
+        if not _MANIFEST_CACHE["running"]:
+            _MANIFEST_CACHE["running"] = True
+            launch = True
+    if launch:
+        try:
+            threading.Thread(
+                target=_refresh_manifest, args=(dict(dataset or {}), key),
+                daemon=True, name="reliability-public-manifest",
+            ).start()
+        except RuntimeError:
+            with _MANIFEST_CACHE_LOCK:
+                if _MANIFEST_CACHE["key"] == key:
+                    _MANIFEST_CACHE["running"] = False
+    return {"checked": False, "ok": None, "reason": "public_manifest_verification_pending"}
+
+
 def _heavy_quality_bundle(session: Session) -> tuple[dict[str, Any], dict[str, Any]]:
     now = time.monotonic()
     with _HEAVY_CACHE_LOCK:
         age = now - float(_HEAVY_CACHE.get("at") or 0.0)
         operational = _HEAVY_CACHE.get("operational")
         map_report = _HEAVY_CACHE.get("map")
-        if age < _HEAVY_CACHE_TTL_SECONDS and isinstance(operational, dict) and isinstance(map_report, dict):
-            return operational, map_report
-        operational = operational_quality_report(session, stale_days=7, problem_limit=10)
-        map_report = map_delivery_reconciliation_report(
-            session,
-            verify_public_manifest=False,
-            problem_limit=10,
-        )
-        map_report["manifest"] = _quick_public_manifest(map_report.get("dataset"))
-        _HEAVY_CACHE.update({"at": now, "operational": operational, "map": map_report})
-        return operational, map_report
+        if not (
+            age < _HEAVY_CACHE_TTL_SECONDS
+            and isinstance(operational, dict)
+            and isinstance(map_report, dict)
+        ):
+            operational = operational_quality_report(session, stale_days=7, problem_limit=10)
+            map_report = map_delivery_reconciliation_report(
+                session, verify_public_manifest=False, problem_limit=10,
+            )
+            _HEAVY_CACHE.update({"at": now, "operational": operational, "map": map_report})
+    # Return a copy so a completed background check cannot mutate a snapshot
+    # that is already being serialized or used by another concurrent request.
+    return operational, {
+        **map_report,
+        "manifest": _cached_public_manifest(map_report.get("dataset")),
+    }
 
 
 def _canonical_source(value: str) -> str:
@@ -331,7 +405,7 @@ def _current_quality(session: Session) -> dict[str, Any]:
     return values
 
 
-def reliability_summary(session: Session) -> dict[str, Any]:
+def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
     sources = reliability_sources(session)
     geo_raw = geocoding_progress(session)
     # The shared GEO progress endpoint can include raw task errors, result payloads
@@ -345,6 +419,10 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         "waiting_for_retry", "percent", "paused", "classified_percent",
     }
     geo = {key: value for key, value in geo_raw.items() if key in safe_geo_fields}
+    geo["population"] = geo.get("total")
+    geo["current_geocoded"] = geo.get("geocoded")
+    geo["actionable"] = geo.get("actionable_remaining")
+    geo["bad_input"] = geo.get("deferred_bad_input")
     geo["scope_description_ru"] = (
         "Текущие основные неархивные лоты с адресом или кадастровым номером. "
         "Показатель требует обработки может включать повторную проверку объектов с координатами."
@@ -461,6 +539,19 @@ def reliability_summary(session: Session) -> dict[str, Any]:
 
     dataset = map_report.get("dataset") or {}
     delivery_ok = bool(map_report.get("ok")) and manifest.get("checked") is True and manifest.get("ok") is True
+    dataset_ok = (
+        dataset.get("status") == "ready"
+        and map_report.get("point_count_matches") is True
+        and map_report.get("tile_count_matches") is True
+        and integrity["current_dataset_count"] == 1
+    )
+    delivery_status = (
+        "ok" if delivery_ok
+        else "not_checked" if manifest_unchecked and not critical
+        else "failed" if critical or manifest_problem
+        else "degraded"
+    )
+    current_quality["current_population"] = current_quality.get("population")
     return {
         "schema_version": 1,
         "generated_at": sources["generated_at"],
@@ -469,11 +560,23 @@ def reliability_summary(session: Session) -> dict[str, Any]:
             "reasons": reasons[:8],
             "generated_at": sources["generated_at"],
             "deployment_sha": os.environ.get("BANKROTAI_DEPLOY_SHA", ""),
+            "app_version": __version__,
+            "schema_revision": SCHEMA_REVISION,
         },
         "sources": {key: value for key, value in sources.items() if key != "items"},
         "geo": geo,
         "map": {
             "ok": delivery_ok,
+            "delivery_status": delivery_status,
+            "db_ok": integrity["current_dataset_count"] == 1,
+            "dataset_ok": dataset_ok,
+            "s3_manifest_ok": manifest.get("ok") if manifest.get("checked") else None,
+            "public_ok": manifest.get("ok") if manifest.get("checked") else None,
+            "mismatch_counts": {
+                "missing": int(map_report.get("missing_from_dataset_count") or 0),
+                "extra": int(map_report.get("extra_in_dataset_count") or 0),
+                "tile_count": integrity["tile_count_mismatches"],
+            },
             "dataset_version": dataset.get("version"),
             "dataset_status": dataset.get("status"),
             "point_count": dataset.get("declared_point_count"),
@@ -494,3 +597,25 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         "host": host,
         "data_quality": current_quality,
     }
+
+
+def reliability_summary(session: Session) -> dict[str, Any]:
+    """Short-lived consistent production snapshot, without mutations to source data.
+
+    First request after TTL expiry computes a fresh snapshot. Concurrent
+    readers share the same result; failures never overwrite a healthy cache.
+    SQLite/tests bypass the cache so changes remain immediately observable.
+    """
+    if not _summary_cache_enabled(session):
+        return _reliability_summary_uncached(session)
+    with _SUMMARY_CACHE_LOCK:
+        now = time.monotonic()
+        snapshot = _SUMMARY_CACHE.get("snapshot")
+        if (
+            isinstance(snapshot, dict)
+            and now - float(_SUMMARY_CACHE.get("at") or 0.0) < _SUMMARY_CACHE_TTL_SECONDS
+        ):
+            return deepcopy(snapshot)
+        result = _reliability_summary_uncached(session)
+        _SUMMARY_CACHE.update({"at": time.monotonic(), "snapshot": deepcopy(result)})
+        return result

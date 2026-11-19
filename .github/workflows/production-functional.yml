@@ -110,6 +110,11 @@ jobs:
         run: npm ci
       - working-directory: WEB
         run: npx playwright install --with-deps chromium
+      # Run Reliability acceptance before unrelated map journeys so that its
+      # screenshots and latency evidence are preserved even if a map gate fails.
+      - name: Verify production Reliability (live data, layout, p95)
+        working-directory: WEB
+        run: npx playwright test e2e/production-reliability.spec.ts --workers=1
       - name: Run authenticated production map gate
         working-directory: WEB
         run: npx playwright test e2e/production-map-availability.spec.ts --workers=1
