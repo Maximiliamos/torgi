@@ -115,6 +115,16 @@ jobs:
       - name: Verify production Reliability (live data, layout, p95)
         working-directory: WEB
         run: npx playwright test e2e/production-reliability.spec.ts --workers=1
+      # Separate Playwright commands reset test-results. Save the screenshots
+      # and p95 JSON before the subsequent map gate deletes that directory.
+      - name: Preserve Reliability screenshots and latency evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: reliability-acceptance-${{ github.run_id }}
+          path: WEB/test-results
+          if-no-files-found: error
+          retention-days: 14
       - name: Run authenticated production map gate
         working-directory: WEB
         run: npx playwright test e2e/production-map-availability.spec.ts --workers=1
