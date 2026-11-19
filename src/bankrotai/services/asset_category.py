@@ -23,9 +23,11 @@ _EQUIPMENT = re.compile(
 _INDUSTRIAL_LINE = re.compile(
     r"\b(?:производственн\w*\s+лини\w*|лини\w*\s+концевого\s+участка)\b", re.IGNORECASE,
 )
+_LOT_TITLE_PREFIX = re.compile(
+    r"^\s*лот\s*№?\s*\d{1,9}(?:\s*\([^)]{1,80}\))?\s*[:.\-—]?\s*", re.IGNORECASE,
+)
 _TIMBER = re.compile(
-    r"^\s*(?:лот\s*№?\s*\d{1,9}(?:\s*\([^)]{1,80}\))?\s*[:.\-—]?\s*)?"
-    r"(?:(?:продажа|реализация)\s+)?(?:"
+    r"^\s*(?:(?:продажа|реализация)\s+)?(?:"
     r"количество\s+и\s+породный\s+состав\s+древесины\b|"
     r"древесин(?:а|ы)\b|лесн\w*\s+насаждени\w*\b|"
     r"прав[оа]\s+заключения\s+договора\s+купли[- ]продажи\s+лесн\w*\s+насаждени\w*\b)",
@@ -61,6 +63,7 @@ def _property(text: str) -> str | None:
 
 
 def explicit_nonproperty_category(title: str) -> str | None:
+    title = _LOT_TITLE_PREFIX.sub("", title, count=1)
     if _TIMBER.search(title):
         return "commodity"
     if _CLAIM.search(title):
