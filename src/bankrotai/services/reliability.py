@@ -1,6 +1,7 @@
 """Read-only aggregate model for the Reliability dashboard."""
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import os
 import re
@@ -52,6 +53,23 @@ _SOURCE_DISPLAY_RU = {
 _HEAVY_CACHE_LOCK = threading.Lock()
 _HEAVY_CACHE_TTL_SECONDS = 300.0
 _HEAVY_CACHE: dict[str, Any] = {"at": 0.0, "operational": None, "map": None}
+
+# The dashboard refreshes every 30s. Reuse the same consistent snapshot
+# briefly rather than repeating expensive aggregate SQL on every browser poll.
+# This cache is per-process, bounded to one snapshot, and never written to DB.
+_SUMMARY_CACHE_LOCK = threading.Lock()
+_SUMMARY_CACHE_TTL_SECONDS = 45.0
+_SUMMARY_CACHE: dict[str, Any] = {"at": 0.0, "snapshot": None}
+
+
+def _summary_cache_enabled(session: Session) -> bool:
+    bind = session.get_bind()
+    return bool(
+        bind is not None
+        and bind.dialect.name == "postgresql"
+        and get_settings().is_production
+    )
+
 
 
 def _quick_public_manifest(dataset: dict[str, Any] | None) -> dict[str, Any]:
@@ -331,7 +349,7 @@ def _current_quality(session: Session) -> dict[str, Any]:
     return values
 
 
-def reliability_summary(session: Session) -> dict[str, Any]:
+def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
     sources = reliability_sources(session)
     geo_raw = geocoding_progress(session)
     # The shared GEO progress endpoint can include raw task errors, result payloads
@@ -494,3 +512,25 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         "host": host,
         "data_quality": current_quality,
     }
+
+
+def reliability_summary(session: Session) -> dict[str, Any]:
+    """Short-lived consistent production snapshot, without mutations to source data.
+
+    First request after TTL expiry computes a fresh snapshot. Concurrent
+    readers share the same result; failures never overwrite a healthy cache.
+    SQLite/tests bypass the cache so changes remain immediately observable.
+    """
+    if not _summary_cache_enabled(session):
+        return _reliability_summary_uncached(session)
+    with _SUMMARY_CACHE_LOCK:
+        now = time.monotonic()
+        snapshot = _SUMMARY_CACHE.get("snapshot")
+        if (
+            isinstance(snapshot, dict)
+            and now - float(_SUMMARY_CACHE.get("at") or 0.0) < _SUMMARY_CACHE_TTL_SECONDS
+        ):
+            return deepcopy(snapshot)
+        result = _reliability_summary_uncached(session)
+        _SUMMARY_CACHE.update({"at": time.monotonic(), "snapshot": deepcopy(result)})
+        return result
