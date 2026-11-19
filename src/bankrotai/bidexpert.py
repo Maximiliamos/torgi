@@ -182,6 +182,19 @@ class BidExpertClient:
         status_evidence = " ".join(current_stages) or source_status
         from bankrotai.connectors.etp_sources.status_normalization import _status
         status = "closed" if "процедура завершена" in status_evidence.casefold() else _status(status_evidence)
+        current_nodes = [stage for stage in stages if "current" in stage.get("class", [])]
+        date_only_stage = bool(current_nodes) and all(
+            (label := stage.select_one(".title")) is not None
+            and re.fullmatch(r"дата\s+проведения\s+торгов\s*:?", label.get_text(" ", strip=True), re.I)
+            for stage in current_nodes
+        )
+        # A highlighted date is context, not a status. Prefer the card's
+        # explicit state here; never infer closure from a past auction date or
+        # override an unsupported/intermediate current stage.
+        if status == "unknown" and date_only_stage:
+            card_status = _status(source_status)
+            if card_status != "unknown":
+                status, status_evidence = card_status, source_status
         if status == "unknown" and source_status.casefold() in {"опубликован", "опубликована"} and not current_stages:
             status = "scheduled"
         application_start = deadline = auction_at = None
@@ -226,6 +239,7 @@ class BidExpertClient:
                 "region_code": region_code,
                 "source_status": source_status,
                 "detail_status_evidence": status_evidence,
+                "current_stage_evidence": current_stages,
                 "raw_endpoint": endpoint,
             },
             application_start_at=application_start,
