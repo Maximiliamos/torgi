@@ -87,7 +87,7 @@ def _quick_public_manifest(dataset: dict[str, Any] | None) -> dict[str, Any]:
             "tile_count": payload.get("tile_count"),
         }
     except (requests.RequestException, ValueError, TypeError) as exc:
-        return {"checked": True, "ok": False, "error": f"{exc.__class__.__name__}: {str(exc)[:300]}"}
+        return {"checked": True, "ok": False, "error": f"{exc.__class__.__name__}: public_manifest_request_failed"}
 
 
 def _heavy_quality_bundle(session: Session) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -332,7 +332,18 @@ def _current_quality(session: Session) -> dict[str, Any]:
 
 def reliability_summary(session: Session) -> dict[str, Any]:
     sources = reliability_sources(session)
-    geo = dict(geocoding_progress(session))
+    geo_raw = geocoding_progress(session)
+    # The shared GEO progress endpoint can include raw task errors, result payloads
+    # and network fingerprints. The Reliability summary intentionally exposes only
+    # whitelisted counts and bounded timing fields.
+    safe_geo_fields = {
+        "total", "geocoded", "remaining", "terminal_failures",
+        "deferred_no_match", "deferred_validation", "deferred_total",
+        "network_wait", "p7_held", "deferred_bad_input",
+        "drain_remaining", "actionable_remaining", "eligible_now",
+        "waiting_for_retry", "percent", "paused", "classified_percent",
+    }
+    geo = {key: value for key, value in geo_raw.items() if key in safe_geo_fields}
     geo["scope_description_ru"] = (
         "Текущие основные неархивные лоты с адресом или кадастровым номером. "
         "Показатель требует обработки может включать повторную проверку объектов с координатами."
