@@ -694,6 +694,8 @@ def persist_lot(session: Session, normalized: NormalizedLot, *, isolate_source: 
     from bankrotai.services.source_lot_exclusions import assert_not_excluded
 
     assert_not_excluded(session, [normalized])
+    from bankrotai.services.mets_identity_aliases import resolve_mets_alias_lots
+    normalized = resolve_mets_alias_lots(session, [normalized])[0]
     source_link = session.scalar(select(SourceLot).where(
         SourceLot.source_system == normalized.source_system,
         SourceLot.external_id == normalized.external_id,

@@ -35,9 +35,10 @@ from bankrotai.scrapers import (
     LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot,
 )
 from bankrotai.services.trusted_time import trusted_utc_now
-from bankrotai.services.detail_freshness import cached_detail_expired, reuse_detail_evidence, refresh_detail_evidence
+from bankrotai.services.detail_freshness import cached_detail_expired, reuse_detail_evidence, refresh_detail_evidence, mutable_raw_evidence
 from bankrotai.services.source_eligibility_evidence import persist_exclusions, clear_exclusion, observe_rejection, partition_sale_lots
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
+from bankrotai.services.mets_identity_aliases import resolve_mets_alias_lots, source_presence_identities
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
@@ -667,6 +668,10 @@ class NationwideIngestionService:
         from bankrotai.services.source_lot_exclusions import excluded_ids
         with self.session_factory() as lookup_session:
             excluded = excluded_ids(lookup_session, result.source_system, [lot.external_id for lot in normalized_lots])
+            # Resolve before negative evidence too, so a rejected fresh primary
+            # publication cannot leave its legacy spelling on the map.
+            normalized_lots = ([lot for lot in normalized_lots if lot.external_id in excluded]
+                + resolve_mets_alias_lots(lookup_session, [lot for lot in normalized_lots if lot.external_id not in excluded]))
         evidence_lots = [lot for lot in normalized_lots if lot.external_id not in excluded]
         persist_exclusions(self.session_factory, result.source_system, evidence_lots, run_id)
         for lot in normalized_lots:
@@ -770,6 +775,7 @@ class NationwideIngestionService:
 
             if self.profile_timings:
                 event.listen(bind, "before_cursor_execute", count_statement)
+            accepted = resolve_mets_alias_lots(session, accepted)
             if not self.use_gis_batch_persistence:
                 self._persist_page_legacy(session, run_id, result, accepted)
                 commit_started = time.perf_counter()
@@ -798,7 +804,7 @@ class NationwideIngestionService:
             changed_or_new: list[Any] = []
             for normalized in accepted:
                 result.items_seen += 1
-                result.seen_external_ids.add(normalized.external_id)
+                result.seen_external_ids.update(source_presence_identities(normalized))
                 source_row = existing_rows.get(normalized.external_id)
                 existed = source_row is not None
                 # Source equality alone cannot prove its ProcessedLot projection
@@ -834,7 +840,7 @@ class NationwideIngestionService:
     ) -> None:
         for normalized in lots:
             result.items_seen += 1
-            result.seen_external_ids.add(normalized.external_id)
+            result.seen_external_ids.update(source_presence_identities(normalized))
             source_row = session.scalar(
                 select(SourceLot).where(
                     SourceLot.source_system == normalized.source_system,
@@ -1127,28 +1133,7 @@ class NationwideIngestionService:
 
     @staticmethod
     def _mutable_raw_evidence(raw: dict[str, Any]) -> tuple[Any, ...]:
-        """Stable evidence for mutable fields that live in heterogeneous source payloads."""
-        keys = (
-            "image_url",
-            "photo_url",
-            "thumbnail_url",
-            "main_image",
-            "image",
-            "photo",
-            "thumbnail",
-            "image_urls",
-            "photo_urls",
-            "images",
-            "photos",
-            "gallery",
-            "listing_fingerprint",
-            "public_offer_schedule",
-            "next_interval_price",
-            "next_price_reduction_at",
-            "minimal_blocks",
-            "dates",
-        )
-        return tuple((key, raw.get(key)) for key in keys if key in raw)
+        return mutable_raw_evidence(raw)
 
     def _result_payload(self, result: SourceSyncResult) -> dict[str, Any]:
         return {

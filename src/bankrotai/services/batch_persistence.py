@@ -242,6 +242,8 @@ def persist_changed_lots_batch(
     from bankrotai.services.source_lot_exclusions import assert_not_excluded
 
     assert_not_excluded(session, lots)
+    from bankrotai.services.mets_identity_aliases import resolve_mets_alias_lots
+    lots = resolve_mets_alias_lots(session, lots)
     skipped = persisted = chunks = 0
     for offset in range(0, len(lots), batch_size):
         chunk_skipped, chunk_persisted = _persist_changed_lots_chunk(

@@ -182,3 +182,29 @@ def detail_is_fresh(
     if source_updated_at and aware(source_updated_at) > fetched:
         return False
     return True
+
+
+def mutable_raw_evidence(raw: dict[str, Any]) -> tuple[Any, ...]:
+    """Stable evidence for mutable fields that live in heterogeneous source payloads."""
+    keys = (
+        "image_url",
+        "photo_url",
+        "thumbnail_url",
+        "main_image",
+        "image",
+        "photo",
+        "thumbnail",
+        "image_urls",
+        "photo_urls",
+        "images",
+        "photos",
+        "gallery",
+        "listing_fingerprint",
+        "public_offer_schedule",
+        "next_interval_price",
+        "next_price_reduction_at",
+        "minimal_blocks",
+        "dates",
+    )
+    return tuple((key, raw.get(key)) for key in keys if key in raw)
+
