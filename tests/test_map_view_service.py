@@ -171,7 +171,10 @@ def test_map_detail_cannot_revive_an_invalidated_historical_geo(current):
         session.commit()
         result = build_map_lot_detail(session, lot.id)
         if current is None:
-            assert result is None
+            assert result is not None
+            assert result["lat"] is None and result["lon"] is None
+            assert result["geometry"] is None
+            assert result["geo_source"] is None
         else:
             assert result["lat"] == 58.0 and result["lon"] == 40.0
             assert result["geometry"] is None

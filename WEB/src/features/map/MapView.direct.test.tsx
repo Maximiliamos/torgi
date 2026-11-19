@@ -430,6 +430,18 @@ describe("direct Yandex tile transport", () => {
     expect(auctionLabel.nextElementSibling?.textContent).toBe("");
   });
 
+  it("opens a stale marker card without reviving invalidated coordinates", async () => {
+    const detail = await vi.mocked(fetchMapLotDetail)(77);
+    vi.mocked(fetchMapLotDetail).mockResolvedValueOnce({ ...detail, lat: null, lon: null, geometry: null });
+    const { MapView } = await import("./MapView");
+    render(<MapView refreshToken={0} />);
+    const frame = screen.getByTitle("Яндекс.Карта лотов") as HTMLIFrameElement;
+    act(() => send(frame, "bankrotai-select", { lotId: 77 }));
+    expect(await screen.findByText("Координаты требуют проверки. Метка из предыдущей версии карты может быть неточной.")).toBeInTheDocument();
+    expect(screen.getByText("Адрес:")).toBeInTheDocument();
+    expect(screen.queryByText(/Не удалось загрузить полную карточку/)).not.toBeInTheDocument();
+  });
+
   it("keeps the four core rows visible when lot detail loading fails", async () => {
     vi.mocked(fetchMapLotDetail).mockRejectedValueOnce(new ApiError("detail unavailable", 503));
 
