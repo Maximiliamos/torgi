@@ -247,7 +247,6 @@ export type SourceHealth = {
   last_items_archived: number;
   last_items_failed: number;
 };
-
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const RETRYABLE_READ_STATUSES = new Set([502, 503, 504]);
 const READ_RETRY_DELAY_MS = 250;
