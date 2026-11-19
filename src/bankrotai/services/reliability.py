@@ -120,17 +120,16 @@ def _safe_error(message: str | None) -> str | None:
         return None
     value = str(message)[:500]
     value = re.sub(
-        r"(?i)(authorization|cookie|password|token|api[_-]?key|secret)\\s*[:=]\\s*[^\\s;&]+",
-        r"\\1=[скрыто]",
+        r"(?i)(authorization|cookie|password|token|api[_-]?key|secret)\s*[:=]\s*[^\s;&]+",
+        r"\1=[скрыто]",
         value,
     )
     value = re.sub(
-        r"(?i)([?&](?:token|key|password|access_token|signature|secret)=)[^&#\\s]+",
-        r"\\1[скрыто]",
+        r"(?i)([?&](?:token|key|password|access_token|signature|secret)=)[^&#\s]+",
+        r"\1[скрыто]",
         value,
     )
     return value[:300]
-
 
 def _utc_naive(value: datetime | None) -> datetime | None:
     if value is None:
