@@ -1,7 +1,7 @@
 """Exact-ID source corrections with a read-only plan and protected user reviews."""
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import datetime
 from decimal import Decimal
 import hashlib
@@ -13,7 +13,7 @@ from sqlalchemy import select, func
 
 from bankrotai.db import CanonicalLot, GeoFailure, LotIssueReport, ProcessedLot, SourceLot, utc_now
 from bankrotai.domain import NormalizedLot
-from bankrotai.logic import _sync_source_lot, apply_lot_status, log_action
+from bankrotai.logic import _sync_source_lot, apply_lot_status, log_action, normalize_status
 from bankrotai.regions import REGIONS_BY_CODE
 from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
 from bankrotai.services.duplicate_projection_policy import valid_duplicate_target
@@ -163,16 +163,29 @@ def _repair_exact_lots(
         detach_duplicate = bool(record.duplicate_of_id and not valid_duplicate_target(candidate, parent))
         if detach_duplicate:
             changes["duplicate_of_id"] = {"before": record.duplicate_of_id, "after": None}
-        if lot.auction_status == "closed" and not record.is_archived:
+        policy_fields = ("title", "description", "category", "address", "auction_type")
+        policy_raw = dict((source.raw_data or {}) if source is not None else {})
+        if observed & {"title", "description", "category", "auction_type"}:
+            policy_raw.update(lot.raw_data)
+        policy_lot = replace(lot, raw_data=policy_raw)
+        for name in policy_fields:
+            if name not in observed:
+                setattr(policy_lot, name, getattr(record, name) if name in PROCESSED_FIELDS else getattr(source, name, None))
+        exclude_from_property_map = not is_sale_real_estate_lot(policy_lot)
+        effective_status = normalize_status(lot.auction_status if "auction_status" in observed else record.auction_status)
+        if effective_status == "closed" and not record.is_archived:
             changes["is_archived"] = {"before": False, "after": True}
+        elif ("auction_status" in observed and effective_status in {"active", "scheduled"}
+              and record.is_archived and not exclude_from_property_map):
+            changes["is_archived"] = {"before": True, "after": False}
         protected = record.review_status is not None and not allow_reviewed_source_fields
         different_asset = (
             bool("cadastral_number" in observed and lot.cadastral_number and canonical is not None and canonical.cadastral_number != lot.cadastral_number)
-            or ("category" in observed and lot.category in {"receivable", "receivables", "debt", "claim", "car", "vehicle", "equipment", "transport", "movable"})
+            or ("category" in observed and lot.category in {"receivable", "receivables", "debt", "claim", "car", "vehicle", "equipment", "transport", "movable", "commodity"})
         )
         entry = {"lot_id": lot_id, "source_system": lot.source_system, "external_id": lot.external_id,
                  "review_status": record.review_status, "protected": protected, "expected_state": state,
-                 "changes": changes, "exclude_from_property_map": not is_sale_real_estate_lot(lot)}
+                 "changes": changes, "exclude_from_property_map": exclude_from_property_map}
         entry["restore_source_provenance"] = source is None or source.processed_lot_id is None
         entry["isolate_canonical"] = bool(canonical is not None and links and links > 1 and different_asset)
         entry["recheck_geo"] = lot_id in (recheck_geo_ids or set())
@@ -194,7 +207,15 @@ def _repair_exact_lots(
             for field in fields(NormalizedLot):
                 if field.name not in SOURCE_FIELDS and field.name != "raw_data" and hasattr(source, field.name):
                     setattr(lot, field.name, getattr(source, field.name))
-            lot.raw_data = {**(source.raw_data or {}), **lot.raw_data}
+            incoming_raw = dict(lot.raw_data)
+            if not observed & {"title", "description", "category", "auction_type"}:
+                # Price/date-only evidence cannot replace the raw eligibility
+                # inputs interpreted later by map and ingestion policies.
+                for name in ("trade_type", "typeTransaction", "bidding_form", "raw",
+                             "category_titles", "categories", "category_display",
+                             "source_sale_eligibility", "source_sale_eligibility_evidence"):
+                    incoming_raw.pop(name, None)
+            lot.raw_data = {**(source.raw_data or {}), **incoming_raw}
         canonical_before = ({name: getattr(canonical, name) for name in
                             ("id", "title", "category", "address", "cadastral_number", "region_code", "area")}
                             if canonical is not None else {})
@@ -253,7 +274,7 @@ def _repair_exact_lots(
             if (not record.is_archived and lot.auction_status in {"active", "scheduled"}
                     and (record.current_geo_lat is None or record.current_geo_lon is None)):
                 record.needs_geo_check = True
-        if lot.auction_status == "closed":
+        if normalize_status(lot.auction_status) == "closed":
             record.is_archived = True
             record.closed_at = record.closed_at or utc_now()
             record.archived_at = record.archived_at or utc_now()

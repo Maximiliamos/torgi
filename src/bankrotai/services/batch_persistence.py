@@ -40,6 +40,7 @@ def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) 
     normalized_status = normalize_status(auction_status)
     now = utc_now()
     terminal = normalized_status == "closed"
+    current = normalized_status in {"active", "scheduled"}
     return {
         "external_id": lot.external_id,
         "source": lot.source,
@@ -68,10 +69,10 @@ def _processed_values(lot: NormalizedLot, existing: ProcessedLot | None = None) 
         # Keep the public projection consistent with explicit terminal source
         # truth.  Before this, SourceLot was archived while ProcessedLot stayed
         # non-archived indefinitely on the batch persistence path.
-        "is_archived": True if terminal else (existing.is_archived if existing is not None else False),
+        "is_archived": True if terminal else False if current else (existing.is_archived if existing is not None else False),
         "archived_at": (
             (existing.archived_at if existing is not None else None) or now
-            if terminal else (existing.archived_at if existing is not None else None)
+            if terminal else None if current else (existing.archived_at if existing is not None else None)
         ),
         "closed_at": (
             (existing.closed_at if existing is not None else None) or now
@@ -454,8 +455,12 @@ def _persist_changed_lots_chunk(
             ProcessedLot.region_code.is_distinct_from(processed_excluded.region_code),
         ),
     )
+    reactivated_without_geo = and_(
+        ProcessedLot.is_archived.is_(True), processed_excluded.is_archived.is_(False),
+        or_(ProcessedLot.current_geo_lat.is_(None), ProcessedLot.current_geo_lon.is_(None)),
+    )
     processed_updates["needs_geo_check"] = case(
-        (geo_input_changed, True),
+        (or_(geo_input_changed, reactivated_without_geo), True),
         else_=ProcessedLot.needs_geo_check,
     )
     processed_updates["geo_input_hash"] = case(

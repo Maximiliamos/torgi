@@ -166,6 +166,29 @@ def test_batch_update_preserves_manually_reviewed_processed_lot() -> None:
         ]
 
 
+def test_fresh_active_source_revives_archived_reviewed_projection_without_status_change() -> None:
+    factory = sessions()
+    with factory() as session:
+        add_run(session, "run-1")
+        persist_changed_lots_batch(session, [make_lot("gis-1")], "run-1")
+        processed = session.scalar(select(ProcessedLot))
+        assert processed is not None
+        processed.is_archived = True
+        processed.archived_at = datetime(2026, 1, 1)
+        processed.review_status = "approved"
+        processed.rating = 0.75
+        processed.needs_geo_check = False
+        session.commit()
+        add_run(session, "run-2")
+        persist_changed_lots_batch(session, [make_lot("gis-1")], "run-2")
+        session.commit()
+        session.refresh(processed)
+        assert processed.auction_status == "active" and not processed.is_archived
+        assert processed.archived_at is None
+        assert processed.needs_geo_check
+        assert processed.review_status == "approved" and processed.rating == 0.75
+
+
 def test_unknown_update_revokes_stale_active_source_state() -> None:
     factory = sessions()
     with factory() as session:

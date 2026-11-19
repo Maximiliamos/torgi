@@ -96,6 +96,10 @@ jobs:
               sleep "$((attempt * 10))"
             done
           }
+          # These public Ubuntu mirrors also serve HTTPS. Avoid blocked HTTP
+          # paths and IPv6 fallback stalls without skipping dependency checks.
+          sudo sed -i -E 's#http://(([[:alnum:]-]+\.)?archive\.ubuntu\.com|security\.ubuntu\.com)/ubuntu#https://\1/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
+          echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99-bankrotai-ci-ipv4 >/dev/null
           apt_retry update
           apt_retry install -y libegl1
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
@@ -149,6 +153,10 @@ jobs:
               sleep "$((attempt * 10))"
             done
           }
+          # These public Ubuntu mirrors also serve HTTPS. Avoid blocked HTTP
+          # paths and IPv6 fallback stalls without skipping dependency checks.
+          sudo sed -i -E 's#http://(([[:alnum:]-]+\.)?archive\.ubuntu\.com|security\.ubuntu\.com)/ubuntu#https://\1/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
+          echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99-bankrotai-ci-ipv4 >/dev/null
           apt_retry update
           apt_retry install -y libegl1
       - run: pip install -r requirements-dev.lock && pip install --no-deps -e .
@@ -281,6 +289,10 @@ jobs:
           npm ci
           # Bound the root apt process itself. Timing out an unprivileged npx
           # parent left sudo's apt child running and holding dpkg's lock.
+          # These public Ubuntu mirrors also serve HTTPS. Avoid blocked HTTP
+          # paths and IPv6 fallback stalls without skipping dependency checks.
+          sudo sed -i -E 's#http://(([[:alnum:]-]+\.)?archive\.ubuntu\.com|security\.ubuntu\.com)/ubuntu#https://\1/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
+          echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99-bankrotai-ci-ipv4 >/dev/null
           sudo tee /etc/apt/apt.conf.d/99-bankrotai-ci-network >/dev/null <<'APT'
           DPkg::Lock::Timeout "180";
           Acquire::Retries "3";
