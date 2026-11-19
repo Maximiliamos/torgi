@@ -136,6 +136,9 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testI
     sloThresholdServerMs: 500,
     note: "Server-Timing includes production handler and database. Warm samples exclude the first request; network RTT is separate.",
   };
+  console.log("Reliability production warm p95 (server ms): " + result.warmP95ServerMs
+    + "; cold server ms: " + result.firstServerMs
+    + "; warm network p95 ms: " + result.warmP95NetworkMs);
   await testInfo.attach("reliability-p95-production.json", {
     body: Buffer.from(JSON.stringify(result, null, 2)), contentType: "application/json",
   });
