@@ -140,7 +140,8 @@ def _utc_naive(value: datetime | None) -> datetime | None:
 def _retry_overdue(item: Any, now: datetime, *, paused: bool = False) -> bool:
     """A scheduled retry is overdue only until an actual subsequent attempt."""
     next_retry = _utc_naive(getattr(item, "next_retry_at", None))
-    if paused or next_retry is None or next_retry >= _utc_naive(now):
+    current = _utc_naive(now) or now
+    if paused or next_retry is None or next_retry >= current:
         return False
     if getattr(item, "status", "") in {"running", "queued"}:
         return False
@@ -441,7 +442,6 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         reasons.append("Резервная копия требует внимания")
     if host.get("runner_healthy") is False:
         reasons.append("Диагностика Runner устарела")
-    disk_free = (host.get("disk") or {}).get("free_gb")
     if disk_status == "unknown":
         reasons.append("Нет свежих данных о свободном месте на диске")
     elif disk_status in {"warning", "critical"}:
