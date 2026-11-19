@@ -43,6 +43,32 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.clearAllMocks(); });
 
 describe("Reliability acceptance gaps", () => {
+  it("shows the dashboard while supplementary journal, capabilities and history are pending", async () => {
+    vi.mocked(fetchOperationsProgress).mockImplementationOnce(() => new Promise(() => {}));
+    vi.mocked(fetchCapabilities).mockImplementationOnce(() => new Promise(() => {}));
+    vi.mocked(fetchQuality).mockImplementationOnce(() => new Promise(() => {}));
+    render(<ReliabilityView refreshToken={0} role="reader" />);
+    expect(await screen.findByRole("heading", { name: /Источники данных/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Обновить" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Экспорт отчёта" })).toBeEnabled();
+    expect(screen.queryByText("Загружаем результаты проверки…")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { healthy: 0, degraded: 0, failed: 0, paused_total: 8, not_checked: 0, tone: "rel-textNeutral" },
+    { healthy: 0, degraded: 0, failed: 0, paused_total: 0, not_checked: 8, tone: "rel-textNeutral" },
+    { healthy: 3, degraded: 0, failed: 0, paused_total: 5, not_checked: 0, tone: "rel-textWarn" },
+    { healthy: 8, degraded: 0, failed: 0, paused_total: 0, not_checked: 0, tone: "rel-textOk" },
+  ])("does not mark paused or unchecked sources green: $healthy healthy, $paused_total paused", async state => {
+    const data = summary();
+    data.sources = { ...data.sources, ...state, configured_total: 8 };
+    vi.mocked(fetchReliabilitySummary).mockResolvedValue(data);
+    render(<ReliabilityView refreshToken={0} role="reader" />);
+    const value = await screen.findByText(`${state.healthy} из 8 без замечаний`);
+    expect(value).toHaveClass(state.tone);
+    expect(within(value).getByText(`На паузе: ${state.paused_total} · нет проверки: ${state.not_checked}`)).toBeVisible();
+  });
+
   it("does not describe a failed manifest as verified and keeps write actions hidden", async () => {
     render(<ReliabilityView refreshToken={0} role="reader" />);
     expect(await screen.findByText("Ошибка доставки")).toBeVisible();

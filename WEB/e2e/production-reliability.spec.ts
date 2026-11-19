@@ -1,14 +1,71 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type APIResponse, type Page, type TestInfo } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 
 test.skip(process.env.E2E_PRODUCTION_AUDIT !== "1",
   "Real production acceptance is only enabled in the dedicated post-deploy workflow.");
 
-async function logIn(page: Page): Promise<void> {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+async function maskSessionCookies(request: APIRequestContext): Promise<void> {
+  if (process.env.GITHUB_ACTIONS !== "true") return;
+  for (const cookie of (await request.storageState()).cookies) {
+    if (cookie.value) console.log("::add-mask::" + cookie.value);
+  }
+}
+
+async function authenticatedGet(request: APIRequestContext, path: string): Promise<APIResponse> {
+  try {
+    return await request.get(path, { headers: { "Cache-Control": "no-store" }, timeout: 30_000 });
+  } catch {
+    // Playwright's raw error includes the Cookie header. Never serialize it.
+    throw new Error("Authenticated production GET failed or timed out: " + path);
+  }
+}
+
+async function logIn(page: Page, testInfo: TestInfo): Promise<void> {
+  // Preserve pre-login evidence before a test-wide timeout prevents artifacts.
+  // Paths only: query strings, headers, cookies and bodies may contain secrets.
+  const navigation: { event: string; origin: string; path: string; status?: number; error?: string }[] = [];
+  const relevant = (kind: string) => ["document", "script", "stylesheet"].includes(kind);
+  const requestListener = (request: import("@playwright/test").Request) => {
+    if (!relevant(request.resourceType())) return;
+    const url = new URL(request.url());
+    navigation.push({ event: "request", origin: url.origin, path: url.pathname });
+  };
+  const responseListener = (response: import("@playwright/test").Response) => {
+    if (!relevant(response.request().resourceType())) return;
+    const url = new URL(response.url());
+    navigation.push({ event: "response", origin: url.origin, path: url.pathname, status: response.status() });
+  };
+  const failureListener = (request: import("@playwright/test").Request) => {
+    if (!relevant(request.resourceType())) return;
+    const url = new URL(request.url());
+    navigation.push({ event: "failed", origin: url.origin, path: url.pathname, error: request.failure()?.errorText });
+  };
+  page.on("request", requestListener);
+  page.on("response", responseListener);
+  page.on("requestfailed", failureListener);
+  try {
+    await page.goto("/", { waitUntil: "domcontentloaded", timeout: 45_000 });
+  } catch (error) {
+    const evidencePath = testInfo.outputPath("pre-login-navigation.json");
+    await writeFile(evidencePath, JSON.stringify(navigation, null, 2));
+    console.log("Pre-login navigation: " + JSON.stringify(navigation));
+    await testInfo.attach("pre-login-navigation.json", {
+      path: evidencePath, contentType: "application/json",
+    });
+    await page.screenshot({ path: testInfo.outputPath("pre-login-screen.png"), timeout: 5_000 }).catch(() => undefined);
+    throw error;
+  } finally {
+    page.off("request", requestListener);
+    page.off("response", responseListener);
+    page.off("requestfailed", failureListener);
+  }
   const navigate = page.getByRole("button", { name: "Надёжность", exact: true });
   const login = page.getByRole("heading", { name: "Вход", exact: true });
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    if (await navigate.isVisible().catch(() => false)) return;
+    if (await navigate.isVisible().catch(() => false)) {
+      await maskSessionCookies(page.context().request);
+      return;
+    }
     if (await login.isVisible().catch(() => false)) break;
     await page.waitForTimeout(500);
   }
@@ -19,6 +76,7 @@ async function logIn(page: Page): Promise<void> {
   await page.getByLabel("Пароль").fill(password);
   await page.getByRole("button", { name: "Войти", exact: true }).click();
   await expect(navigate).toBeVisible({ timeout: 40_000 });
+  await maskSessionCookies(page.context().request);
 }
 
 type ReliabilitySource = {
@@ -42,7 +100,7 @@ function percentile95(samples: number[]): number {
 
 test("Reliability data and layout: desktop, tablet and mobile", async ({ page }, testInfo) => {
   test.setTimeout(150_000);
-  await logIn(page);
+  await logIn(page, testInfo);
   await page.getByRole("button", { name: "Надёжность", exact: true }).click();
   const panel = page.locator(".rel-dashboard");
   await expect(panel).toBeVisible({ timeout: 30_000 });
@@ -50,8 +108,8 @@ test("Reliability data and layout: desktop, tablet and mobile", async ({ page },
   await expect(panel.getByRole("heading", { name: "GEO · координаты" })).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Карта: доставка и целостность" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Экспорт отчёта" })).toBeEnabled();
-  const summaryResponse = await page.context().request.get("/api/reliability/summary", { timeout: 30_000 });
-  const sourcesResponse = await page.context().request.get("/api/reliability/sources", { timeout: 30_000 });
+  const summaryResponse = await authenticatedGet(page.context().request, "/api/reliability/summary");
+  const sourcesResponse = await authenticatedGet(page.context().request, "/api/reliability/sources");
   expect(summaryResponse.status()).toBe(200);
   expect(sourcesResponse.status()).toBe(200);
   const summary = await summaryResponse.json() as ReliabilitySummary;
@@ -111,24 +169,48 @@ test("Reliability data and layout: desktop, tablet and mobile", async ({ page },
   await expect(panel.locator(".rel-tab--all")).toHaveAttribute("aria-pressed", "true");
 });
 
-test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testInfo) => {
+test("Reliability summary server-side warm p95 <= 500ms", async ({ request }, testInfo) => {
   test.setTimeout(120_000);
-  await logIn(page);
+  // Measure the authenticated API independently of browser navigation. The
+  // preceding test covers the real browser login and all responsive layouts.
+  const password = process.env.E2E_PASSWORD;
+  if (!password) throw new Error("E2E_PASSWORD is required for production acceptance");
+  const login = await request.post("/api/auth/login", {
+    data: { username: process.env.E2E_USERNAME || "reader", password }, timeout: 30_000,
+  });
+  expect(login.status()).toBe(200);
+  await maskSessionCookies(request);
+  const deployment = await authenticatedGet(request, "/deployment.json");
+  expect(deployment.status()).toBe(200);
+  const expectedSha = (await deployment.json() as { commit: string }).commit;
+  expect(expectedSha).toMatch(/^[a-f0-9]{40}$/);
   const timings: number[] = [];
   const networkTimes: number[] = [];
   let firstServerMs: number | null = null;
+  let firstGeneratedAt: string | null = null;
   for (let i = 0; i < 22; i += 1) {
     const start = performance.now();
-    const response = await page.context().request.get("/api/reliability/summary", {
-      headers: { "Cache-Control": "no-store" }, timeout: 30_000,
-    });
+    let response: APIResponse;
+    try {
+      response = await authenticatedGet(request, "/api/reliability/summary");
+    } catch {
+      await writeFile(testInfo.outputPath("reliability-p95-incomplete.json"), JSON.stringify({
+        failedSampleIndex: i, firstServerMs, completedWarmSamples: timings,
+        completedNetworkSamples: networkTimes, acceptancePassed: false,
+      }, null, 2));
+      throw new Error("Reliability public request timed out or failed at sample " + i);
+    }
     const networkMs = performance.now() - start;
     expect(response.status()).toBe(200);
+    const snapshot = await response.json() as { system: { deployment_sha: string }; generated_at: string };
+    expect(snapshot.system.deployment_sha).toBe(expectedSha);
+    if (i === 0) firstGeneratedAt = snapshot.generated_at;
     const header = response.headers()["server-timing"] || "";
     const match = header.match(/(?:^|,)\s*reliability;dur=([\d.]+)/);
     expect(match, "Production response must expose backend handler latency").not.toBeNull();
     const serverMs = Number(match![1]);
     expect(Number.isFinite(serverMs)).toBe(true);
+    console.log("Reliability sample " + i + ": server=" + serverMs + "ms; network=" + Math.round(networkMs) + "ms");
     if (i === 0) firstServerMs = serverMs;
     else {
       timings.push(serverMs);
@@ -138,6 +220,8 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testI
   const sorted = timings.slice().sort((a, b) => a - b);
   const result = {
     sampleCount: timings.length,
+    deploymentSha: expectedSha,
+    firstGeneratedAt,
     firstServerMs,
     warmP50ServerMs: sorted[Math.floor((sorted.length - 1) / 2)],
     warmP95ServerMs: percentile95(timings),
@@ -150,9 +234,9 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testI
   console.log("Reliability production warm p95 (server ms): " + result.warmP95ServerMs
     + "; cold server ms: " + result.firstServerMs
     + "; warm network p95 ms: " + result.warmP95NetworkMs);
-  await testInfo.attach("reliability-p95-production.json", {
-    body: Buffer.from(JSON.stringify(result, null, 2)), contentType: "application/json",
-  });
+  const metricsPath = testInfo.outputPath("reliability-p95-production.json");
+  await writeFile(metricsPath, JSON.stringify(result, null, 2));
+  await testInfo.attach("reliability-p95-production.json", { path: metricsPath, contentType: "application/json" });
   expect(result.warmP95ServerMs).toBeLessThanOrEqual(500);
   expect(result.overallP95ServerMs).toBeLessThanOrEqual(500);
 });
