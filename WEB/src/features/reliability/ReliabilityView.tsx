@@ -362,7 +362,9 @@ function DataQualityPanel({ model }: { model: ReliabilityModel }) {
 }
 
 function InfrastructurePanel({ model }: { model: ReliabilityModel }) {
-  const { configured, degraded, failed, host, stable } = model;
+  const { configured, degraded, failed, host, stable, paused, notChecked } = model;
+  const sourcesTone = configured && stable === configured ? "rel-textOk"
+    : failed || degraded || (stable ?? 0) > 0 ? "rel-textWarn" : "rel-textNeutral";
   return <section className="rel-card" id="rel-infra">
           <h2><Server size={19} />Инфраструктура</h2>
           <div className="rel-infra">
@@ -371,7 +373,7 @@ function InfrastructurePanel({ model }: { model: ReliabilityModel }) {
             <div><Clock3 size={18} /><span>Диагностика Runner</span><b className={host?.runner_healthy ? "rel-textOk" : "rel-textWarn"}>{host?.runner_healthy ? "Свежая проверка" : "Нет свежей проверки"}<small>{host?.runner_age_seconds == null ? "Возраст неизвестен" : n(Math.round(host.runner_age_seconds / 60)) + " мин назад"} · проверка: {moscow(host?.runner_diagnostic?.checked_at)} · не статус процесса</small></b></div>
             <div><Server size={18} /><span>API / база</span><b className={host?.api?.status === "ok" && host?.database?.status === "ok" ? "rel-textOk" : "rel-textWarn"}>{host?.api?.status === "ok" && host?.database?.status === "ok" ? "Доступны" : "Проверка недоступна"}<small>Текущий запрос к базе</small></b></div>
             <div><Clock3 size={18} /><span>Очередь задач</span><b className="rel-textNeutral">{host?.queue?.status === "disabled" ? "Отключена по конфигурации" : "Не проверена"}<small>{host?.read_only ? "Режим только для чтения" : "Статус процесса не подтверждён"}</small></b></div>
-            <div><Layers3 size={18} /><span>Источники</span><b className={failed || degraded ? "rel-textWarn" : "rel-textOk"}>{n(stable)} из {n(configured)} без замечаний<small>Данные планового сбора</small></b></div>
+            <div><Layers3 size={18} /><span>Источники</span><b className={sourcesTone}>{n(stable)} из {n(configured)} без замечаний<small>На паузе: {n(paused)} · нет проверки: {n(notChecked)}</small></b></div>
           </div>
           <button className="rel-link" onClick={() => moveTo("rel-map")}>Детальная проверка доставки карты</button>
         </section>;
