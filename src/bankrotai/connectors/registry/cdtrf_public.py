@@ -221,7 +221,13 @@ def parse_detail(html: str, url: str) -> dict:
     if not str(lot_id).isdigit() or not str(lot_number).isdigit():
         raise CdtrfEvidenceError("No stable CDTRF lot identity")
     initial = money(str(lot.get("priceBegin") or ""))
-    visible_price = money(_text(soup.select_one(".lot-sidebar__price-val")))
+    price_container = soup.select_one(".lot-sidebar__price-val")
+    # The sidebar can also contain a promotional badge ("minimum price").
+    # Keep the literal numeric HTML/SSR comparison, scoped to its price node.
+    price_nodes = price_container.select(".price") if price_container else []
+    if len(price_nodes) > 1:
+        raise CdtrfEvidenceError("Ambiguous HTML individual lot price")
+    visible_price = money(_text(price_nodes[0] if price_nodes else price_container))
     if not initial or initial != visible_price:
         raise CdtrfEvidenceError("Price disagreement between HTML and SSR")
     region, category = None, None

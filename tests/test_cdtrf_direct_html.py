@@ -97,6 +97,19 @@ def build_detail(*, tamper_price=False, tamper_id=False):
     """
 
 
+def test_price_badge_is_not_part_of_the_literal_numeric_price():
+    html = build_detail().replace(
+        '<div class="lot-sidebar__price-val">675 000,00 ₽</div>',
+        '<div class="lot-sidebar__price-val"><div class="price down">675 000,00 ₽</div>'
+        '<div class="lot-sidebar__hot">Действует минимальная цена</div></div>',
+    )
+    assert parse_detail(html, URL)["initial_price_rub"] == "675000.00"
+    with pytest.raises(CdtrfEvidenceError, match="Price disagreement"):
+        parse_detail(html.replace('class="price down">675 000', 'class="price down">675 001'), URL)
+    with pytest.raises(CdtrfEvidenceError, match="Ambiguous HTML"):
+        parse_detail(html.replace('<div class="lot-sidebar__hot">', '<div class="price">675 000,00 ₽</div><div class="lot-sidebar__hot">'), URL)
+
+
 def test_catalogue_recovers_distinct_trade_id_and_records_no_complete_pagination():
     report = parse_catalogue(catalog())
     assert report["visible_cards"] == 1
