@@ -217,7 +217,7 @@ export function ReliabilityView(props: { refreshToken: number; role: string }) {
       <div className="rel-heading"><ShieldCheck size={36} /><div><h1>Надёжность</h1><p>Состояние сбора, обработки и актуальности данных по всем источникам</p></div></div>
       <div className="rel-headerControls">
         <span className="rel-env"><Dot tone="ok" /> Production</span>
-        <span className="rel-updated">Обновлено: <b>{moscow(summary?.generated_at)}</b><small>Автообновление каждые 30 сек</small>{staleBlocks.length > 0 && <small className="rel-textWarn" role="status">Устарели: {staleBlocks.join(", ")}</small>}</span>
+        <span className="rel-updated">Обновлено: <b>{moscow(summary?.generated_at)}</b><small>Автообновление каждые 30 сек</small>{summary?.refresh_state && summary.refresh_state !== "fresh" && <small className="rel-textWarn" role="status">{summary.refresh_state === "error" ? "Показаны последние данные; обновление временно недоступно" : "Состояние обновляется в фоне"}</small>}{staleBlocks.length > 0 && <small className="rel-textWarn" role="status">Устарели: {staleBlocks.join(", ")}</small>}</span>
         <button className="rel-action" disabled={refreshing} onClick={() => void load()}><RefreshCcw size={16} className={refreshing ? "rel-spin" : ""} />{refreshing ? "Обновляем…" : "Обновить"}</button>
         <button className="rel-action" disabled={!summary} onClick={download}><Download size={16} />Экспорт отчёта</button>
       </div>

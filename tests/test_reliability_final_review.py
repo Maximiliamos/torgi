@@ -141,6 +141,47 @@ def test_pending_integrity_is_explicit_and_does_not_claim_a_healthy_system(monke
     assert result['map']['ok'] is False
 
 
+def test_expired_summary_is_served_immediately_without_a_silent_green_status(monkeypatch):
+    import bankrotai.db as db
+
+    started, release = Event(), Event()
+    calls = []
+    monkeypatch.setattr(service, '_SUMMARY_CACHE', {'at': 0.0, 'snapshot': None})
+    monkeypatch.setattr(service, '_summary_cache_enabled', lambda session: True)
+    monkeypatch.setattr(service, 'prepare_reliability_snapshot', lambda session: None)
+    monkeypatch.setattr(db, 'SessionLocal', lambda: nullcontext(object()))
+
+    def compute(session):
+        calls.append(1)
+        if len(calls) > 1:
+            started.set()
+            assert release.wait(3)
+        return {'generated_at': str(len(calls)), 'system': {'status': 'ok', 'reasons': []}}
+
+    monkeypatch.setattr(service, '_reliability_summary_uncached', compute)
+    assert service.reliability_summary(object())['generated_at'] == '1'
+    service._SUMMARY_CACHE['at'] = 0.0
+    begun = time.monotonic()
+    previous = service.reliability_summary(object())
+    assert time.monotonic()-begun < 0.5
+    assert previous['generated_at'] == '1' and previous['refresh_state'] == 'refreshing'
+    assert previous['system']['status'] == 'degraded'
+    assert service._SUMMARY_CACHE['snapshot']['system']['status'] == 'ok'
+    try:
+        assert started.wait(1)
+        assert service.reliability_summary(object())['generated_at'] == '1'
+        assert len(calls) == 2
+    finally:
+        release.set()
+        for _ in range(100):
+            with service._SUMMARY_CACHE_LOCK:
+                running = service._SUMMARY_CACHE.get('running')
+            if not running:
+                break
+            time.sleep(0.01)
+    assert service.reliability_summary(object())['generated_at'] == '2'
+
+
 @pytest.mark.postgres
 def test_production_reliability_snapshot_is_repeatable_and_read_only():
     from sqlalchemy import text

@@ -134,6 +134,7 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testI
     firstServerMs,
     warmP50ServerMs: sorted[Math.floor((sorted.length - 1) / 2)],
     warmP95ServerMs: percentile95(timings),
+    overallP95ServerMs: percentile95([firstServerMs!, ...timings]),
     warmMaxServerMs: Math.max(...timings),
     warmP95NetworkMs: percentile95(networkTimes),
     sloThresholdServerMs: 500,
@@ -146,4 +147,5 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testI
     body: Buffer.from(JSON.stringify(result, null, 2)), contentType: "application/json",
   });
   expect(result.warmP95ServerMs).toBeLessThanOrEqual(500);
+  expect(result.overallP95ServerMs).toBeLessThanOrEqual(500);
 });

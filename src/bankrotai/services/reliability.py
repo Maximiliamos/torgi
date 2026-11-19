@@ -688,23 +688,58 @@ def prepare_reliability_snapshot(session: Session) -> None:
         session.execute(text("SET TRANSACTION READ ONLY"))
 
 
-def reliability_summary(session: Session) -> dict[str, Any]:
-    """Short-lived consistent production snapshot, without mutations to source data.
+def _refresh_summary_snapshot():
+    from bankrotai.db import SessionLocal
+    try:
+        with SessionLocal() as session:
+            prepare_reliability_snapshot(session)
+            result = _reliability_summary_uncached(session)
+        with _SUMMARY_CACHE_LOCK:
+            _SUMMARY_CACHE.update({"at": time.monotonic(), "snapshot": deepcopy(result),
+                                   "failed": False, "retry_at": 0.0})
+    except Exception:
+        with _SUMMARY_CACHE_LOCK:
+            _SUMMARY_CACHE.update({"failed": True, "retry_at": time.monotonic() + 30.0})
+    finally:
+        with _SUMMARY_CACHE_LOCK:
+            _SUMMARY_CACHE["running"] = False
 
-    First request after TTL expiry computes a fresh snapshot. Concurrent
-    readers share the same result; failures never overwrite a healthy cache.
-    SQLite/tests bypass the cache so changes remain immediately observable.
+
+def reliability_summary(session: Session) -> dict[str, Any]:
+    """Serve the last consistent snapshot while one background refresh runs.
+
+    Initial bootstrap reads the cheap live counters once. Subsequent cache
+    expiry never blocks browser requests on aggregate SQL. A stale snapshot
+    keeps its original timestamp and is explicitly marked, never silently green.
     """
     if not _summary_cache_enabled(session):
         return _reliability_summary_uncached(session)
+    launch = False
     with _SUMMARY_CACHE_LOCK:
         now = time.monotonic()
         snapshot = _SUMMARY_CACHE.get("snapshot")
-        if (
-            isinstance(snapshot, dict)
-            and now - float(_SUMMARY_CACHE.get("at") or 0.0) < _SUMMARY_CACHE_TTL_SECONDS
-        ):
-            return deepcopy(snapshot)
-        result = _reliability_summary_uncached(session)
-        _SUMMARY_CACHE.update({"at": time.monotonic(), "snapshot": deepcopy(result)})
-        return result
+        if not isinstance(snapshot, dict):
+            result = _reliability_summary_uncached(session)
+            _SUMMARY_CACHE.update({"at": time.monotonic(), "snapshot": deepcopy(result), "failed": False})
+            return {**result, "refresh_state": "fresh"}
+        fresh = now - float(_SUMMARY_CACHE.get("at") or 0.0) < _SUMMARY_CACHE_TTL_SECONDS
+        if not fresh and not _SUMMARY_CACHE.get("running") and now >= float(_SUMMARY_CACHE.get("retry_at") or 0):
+            _SUMMARY_CACHE["running"] = launch = True
+        result = deepcopy(snapshot)
+        failed = bool(_SUMMARY_CACHE.get("failed"))
+    result["refresh_state"] = "fresh" if fresh else "error" if failed else "refreshing"
+    if not fresh:
+        system = result["system"]
+        if system.get("status") == "ok":
+            system["status"] = "degraded"
+        reason = ("Не удалось обновить состояние; показаны последние данные" if failed
+                  else "Состояние обновляется; показаны последние подтверждённые данные")
+        system["reasons"] = [reason, *system.get("reasons", [])][:8]
+    if launch:
+        try:
+            threading.Thread(target=_refresh_summary_snapshot, daemon=True,
+                             name="reliability-summary-snapshot").start()
+        except RuntimeError:
+            with _SUMMARY_CACHE_LOCK:
+                _SUMMARY_CACHE.update({"running": False, "failed": True, "retry_at": now + 30.0})
+    return result

@@ -410,7 +410,16 @@ def test_bounded_reliability_snapshot_cache(monkeypatch) -> None:
         assert second["system"]["status"] == "degraded"
         tick[0] += 16.0
         third = module.reliability_summary(session)
-        assert third["generated_at"] == "2"
+        assert third["generated_at"] == "1"
+        assert third["refresh_state"] == "refreshing"
+        import time
+        for _ in range(100):
+            with module._SUMMARY_CACHE_LOCK:
+                running = module._SUMMARY_CACHE.get("running")
+            if not running:
+                break
+            time.sleep(0.01)
+        assert module.reliability_summary(session)["generated_at"] == "2"
     assert len(seen) == 2
 
 

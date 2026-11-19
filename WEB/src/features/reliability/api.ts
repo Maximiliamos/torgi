@@ -35,6 +35,7 @@ export type ReliabilitySourcesResponse = {
 
 export type ReliabilitySummary = {
   schema_version: number;
+  refresh_state?: "fresh" | "refreshing" | "error";
   generated_at: string;
   system: { status: "ok" | "degraded" | "incident" | string; reasons: string[]; generated_at?: string; deployment_sha: string; app_version?: string; schema_revision?: string };
   sources: Omit<ReliabilitySourcesResponse, "items">;
