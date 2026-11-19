@@ -40,6 +40,7 @@ export type ReliabilitySummary = {
   sources: Omit<ReliabilitySourcesResponse, "items">;
   geo: OperationsProgress["geocoding"] & { scope_description_ru?: string; population?: number; current_geocoded?: number; actionable?: number; bad_input?: number };
   map: {
+    checked_at?: string | null;
     ok: boolean;
     delivery_status?: "ok" | "degraded" | "failed" | "not_checked";
     db_ok?: boolean;
@@ -60,6 +61,9 @@ export type ReliabilitySummary = {
     public_manifest?: { checked?: boolean; ok?: boolean | null; [key: string]: unknown };
   };
   integrity: {
+    checked?: boolean;
+    status?: "checked" | "stale" | "not_checked" | "error";
+    checked_at?: string | null;
     source_without_processed: number;
     processed_without_source: number;
     current_dataset_count: number;

@@ -12,12 +12,12 @@ from urllib.parse import quote
 
 import requests
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from bankrotai import __version__
 from bankrotai.core import get_settings
-from bankrotai.db import AppSetting, ProcessedLot, SCHEMA_REVISION, utc_now
+from bankrotai.db import AppSetting, MapDataset, ProcessedLot, SCHEMA_REVISION, utc_now
 from bankrotai.services.geo_backfill import geocoding_progress
 from bankrotai.services.operations_status import operations_host_status
 from bankrotai.services.quality import (
@@ -159,27 +159,82 @@ def _cached_public_manifest(dataset: dict[str, Any] | None) -> dict[str, Any]:
     return {"checked": False, "ok": None, "reason": "public_manifest_verification_pending"}
 
 
+def _dataset_cache_identity(session: Session):
+    rows = session.scalars(select(MapDataset).where(MapDataset.is_current.is_(True)).order_by(MapDataset.id)).all()
+    key = tuple((r.id, r.version, r.point_count, r.tile_count, r.status, r.published_at) for r in rows)
+    dataset = None if len(rows) != 1 else {
+        "version": rows[0].version, "status": rows[0].status,
+        "declared_point_count": rows[0].point_count, "declared_tile_count": rows[0].tile_count,
+        "published_at": rows[0].published_at,
+    }
+    return key, dataset, len(rows)
+
+
+def _compute_quality_bundle(session: Session):
+    checked_at = utc_now().isoformat()
+    operational = operational_quality_report(session, stale_days=7, problem_limit=10)
+    report = map_delivery_reconciliation_report(session, verify_public_manifest=False, problem_limit=10)
+    return {**operational, "checked_at": checked_at}, {**report, "checked_at": checked_at}
+
+
+def _refresh_quality_bundle(dataset_key):
+    from bankrotai.db import SessionLocal
+    try:
+        with SessionLocal() as session:
+            prepare_reliability_snapshot(session)
+            if _dataset_cache_identity(session)[0] != dataset_key:
+                return
+            captured_at = time.monotonic()
+            operational, report = _compute_quality_bundle(session)
+        with _HEAVY_CACHE_LOCK:
+            _HEAVY_CACHE.update({"at": captured_at, "operational": operational,
+                                 "map": report, "dataset_key": dataset_key, "retry_at": 0.0,
+                                 "last_error_key": None})
+    except Exception:
+        with _HEAVY_CACHE_LOCK:
+            _HEAVY_CACHE["retry_at"] = time.monotonic() + 30.0
+            _HEAVY_CACHE["last_error_key"] = dataset_key
+    finally:
+        with _HEAVY_CACHE_LOCK:
+            _HEAVY_CACHE["running"] = False
+
+
 def _heavy_quality_bundle(session: Session) -> tuple[dict[str, Any], dict[str, Any]]:
     now = time.monotonic()
+    dataset_key, dataset, dataset_count = _dataset_cache_identity(session)
+    asynchronous = _summary_cache_enabled(session)
+    launch = False
     with _HEAVY_CACHE_LOCK:
-        age = now - float(_HEAVY_CACHE.get("at") or 0.0)
         operational = _HEAVY_CACHE.get("operational")
-        map_report = _HEAVY_CACHE.get("map")
-        if not (
-            age < _HEAVY_CACHE_TTL_SECONDS
-            and isinstance(operational, dict)
-            and isinstance(map_report, dict)
-        ):
-            operational = operational_quality_report(session, stale_days=7, problem_limit=10)
-            map_report = map_delivery_reconciliation_report(
-                session, verify_public_manifest=False, problem_limit=10,
-            )
-            _HEAVY_CACHE.update({"at": now, "operational": operational, "map": map_report})
-    # Return a copy so a completed background check cannot mutate a snapshot
-    # that is already being serialized or used by another concurrent request.
+        report = _HEAVY_CACHE.get("map")
+        same_dataset = (_HEAVY_CACHE.get("dataset_key") == dataset_key
+                        and isinstance(operational, dict) and isinstance(report, dict))
+        fresh = same_dataset and now - float(_HEAVY_CACHE.get("at") or 0.0) < _HEAVY_CACHE_TTL_SECONDS
+        if not fresh and not asynchronous:
+            operational, report = _compute_quality_bundle(session)
+            _HEAVY_CACHE.update({"at": time.monotonic(), "operational": operational,
+                                 "map": report, "dataset_key": dataset_key, "last_error_key": None})
+            fresh = same_dataset = True
+        elif not fresh and not _HEAVY_CACHE.get("running") and now >= float(_HEAVY_CACHE.get("retry_at") or 0):
+            _HEAVY_CACHE["running"] = launch = True
+        if not same_dataset:
+            operational = {"integrity": {"current_dataset_count": dataset_count}}
+            report = {"ok": False, "dataset": dataset}
+        assert isinstance(operational, dict) and isinstance(report, dict)
+        operational, report = deepcopy(operational), deepcopy(report)
+        verification_error = _HEAVY_CACHE.get("last_error_key") == dataset_key
+    if launch:
+        try:
+            threading.Thread(target=_refresh_quality_bundle, args=(dataset_key,),
+                             daemon=True, name="reliability-quality-snapshot").start()
+        except RuntimeError:
+            with _HEAVY_CACHE_LOCK:
+                _HEAVY_CACHE.update({"running": False, "retry_at": now + 30.0})
     return operational, {
-        **map_report,
-        "manifest": _cached_public_manifest(map_report.get("dataset")),
+        **report, "verification_pending": not fresh, "verification_stale": same_dataset and not fresh,
+        "verification_error": verification_error,
+        "manifest": _cached_public_manifest(report.get("dataset")) if fresh
+                    else {"checked": False, "ok": None, "reason": "quality_verification_pending"},
     }
 
 
@@ -193,6 +248,12 @@ def _safe_error(message: str | None) -> str | None:
     if not message:
         return None
     value = str(message)[:500]
+    value = re.sub(r"(?i)(authorization\s*[:=]\s*)(?:bearer|basic)\s+[^\s,;]+",
+                   r"\1[скрыто]", value)
+    value = re.sub(r"(?im)(\b(?:set-cookie|cookie)\s*[:=]\s*)[^\r\n]+", r"\1[скрыто]", value)
+    value = re.sub(r"(?i)(https?://)[^\s/@]+:[^\s/@]+@", r"\1[скрыто]@", value)
+    value = re.sub(r'''(?i)(["']?(?:password|token|api[_-]?key|secret)["']?\s*[:=]\s*)(["'])(.*?)\2''',
+                   r"\1[скрыто]", value)
     value = re.sub(
         r"(?i)(authorization|cookie|password|token|api[_-]?key|secret)\s*[:=]\s*[^\s;&]+",
         r"\1=[скрыто]",
@@ -299,6 +360,8 @@ def reliability_sources(session: Session) -> dict[str, Any]:
                 "aliases": sorted(aliases.get(source_id, set())),
                 "configured": source_id in configured,
                 "scheduled": source_id in configured,
+                "effective_scheduled": source_id in configured and source_id not in paused,
+                "pilot": source_id in registered and source_id not in configured,
                 "registered": source_id in registered,
                 "historical_only": source_id not in configured and source_id not in registered,
                 "paused": source_id in paused,
@@ -317,6 +380,8 @@ def reliability_sources(session: Session) -> dict[str, Any]:
                 "aliases": [],
                 "configured": source_id in configured,
                 "scheduled": source_id in configured,
+                "effective_scheduled": source_id in configured and source_id not in paused,
+                "pilot": source_id in registered and source_id not in configured,
                 "registered": source_id in registered,
                 "historical_only": source_id not in configured and source_id not in registered,
                 "paused": source_id in paused,
@@ -342,6 +407,8 @@ def reliability_sources(session: Session) -> dict[str, Any]:
                 "last_items_archived": 0,
                 "last_items_failed": 0,
             }
+        full_at = _utc_naive(getattr(item, "last_complete_success_at", None)) if members else None
+        row["full_snapshot_age_seconds"] = max(0, int((generated_at - full_at).total_seconds())) if full_at else None
         rows.append(row)
 
     order = {"failed": 0, "degraded": 1, "paused": 2, "not_checked": 3, "healthy": 4}
@@ -350,6 +417,7 @@ def reliability_sources(session: Session) -> dict[str, Any]:
         "generated_at": generated_at.isoformat(),
         "configured_total": len(configured),
         "scheduled_total": sum(bool(row["scheduled"]) for row in rows),
+        "effective_scheduled_total": sum(bool(row["effective_scheduled"]) for row in rows),
         "registered_total": len(registered),
         "monitored_total": len(rows),
         "paused_total": sum(bool(row["paused"]) for row in rows if row["configured"]),
@@ -359,6 +427,9 @@ def reliability_sources(session: Session) -> dict[str, Any]:
         "not_checked": sum(row["overall_status"] == "not_checked" for row in rows if row["configured"]),
         "stale": sum(row.get("freshness_status") == "stale" for row in rows if row["configured"]),
         "complete_fresh": sum(row.get("coverage_status") == "fresh" for row in rows if row["configured"]),
+        "current_full_snapshot_age": max((row["full_snapshot_age_seconds"] for row in rows
+            if row["configured"] and row["full_snapshot_age_seconds"] is not None), default=None),
+        "current_full_snapshot_age_unit": "seconds",
         "items": rows,
     }
 
@@ -370,33 +441,23 @@ def _current_quality(session: Session) -> dict[str, Any]:
         & or_(ProcessedLot.auction_status.is_(None), ProcessedLot.auction_status.notin_(tuple(ENDED_STATUSES)))
     )
 
-    def count(extra: Any | None = None) -> int:
-        query = select(func.count()).select_from(ProcessedLot).where(live)
-        if extra is not None:
-            query = query.where(extra)
-        return int(session.scalar(query) or 0)
-
-    total = count()
-    values: dict[str, Any] = {
-        "population": total,
-        "missing_address": count(ProcessedLot.address.is_(None) | (func.trim(ProcessedLot.address) == "")),
-        "missing_cadastre": count(
-            ProcessedLot.cadastral_number.is_(None) | (func.trim(ProcessedLot.cadastral_number) == "")
-        ),
-        "missing_price": count(ProcessedLot.current_price.is_(None) & ProcessedLot.start_price.is_(None)),
-        "unknown_status": count(or_(ProcessedLot.auction_status.is_(None), ProcessedLot.auction_status == "unknown")),
-        "missing_region": count(
-            ProcessedLot.region_code.is_(None) | (func.trim(ProcessedLot.region_code) == "")
-        ),
-        "missing_url": count(
-            (ProcessedLot.lot_url.is_(None) | (func.trim(ProcessedLot.lot_url) == ""))
-            & (ProcessedLot.source_url.is_(None) | (func.trim(ProcessedLot.source_url) == ""))
-        ),
-        "non_positive_price": count(
-            (ProcessedLot.current_price.isnot(None) & (ProcessedLot.current_price <= 0))
-            | (ProcessedLot.start_price.isnot(None) & (ProcessedLot.start_price <= 0))
-        ),
+    missing = {
+        "missing_address": ProcessedLot.address.is_(None) | (func.trim(ProcessedLot.address) == ""),
+        "missing_cadastre": ProcessedLot.cadastral_number.is_(None) | (func.trim(ProcessedLot.cadastral_number) == ""),
+        "missing_price": ProcessedLot.current_price.is_(None) & ProcessedLot.start_price.is_(None),
+        "unknown_status": or_(ProcessedLot.auction_status.is_(None), ProcessedLot.auction_status == "unknown"),
+        "missing_region": ProcessedLot.region_code.is_(None) | (func.trim(ProcessedLot.region_code) == ""),
+        "missing_url": (ProcessedLot.lot_url.is_(None) | (func.trim(ProcessedLot.lot_url) == ""))
+                       & (ProcessedLot.source_url.is_(None) | (func.trim(ProcessedLot.source_url) == "")),
+        "non_positive_price": (ProcessedLot.current_price.isnot(None) & (ProcessedLot.current_price <= 0))
+                              | (ProcessedLot.start_price.isnot(None) & (ProcessedLot.start_price <= 0)),
     }
+    row = session.execute(select(
+        func.count().label("population"),
+        *(func.count().filter(condition).label(name) for name, condition in missing.items()),
+    ).select_from(ProcessedLot).where(live)).mappings().one()
+    values: dict[str, Any] = {name: int(value or 0) for name, value in row.items()}
+    total = values["population"]
     values["percentages"] = {
         key: round((value / total * 100) if total else 0.0, 1)
         for key, value in values.items()
@@ -486,7 +547,10 @@ def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
     manifest = map_report.get("manifest") or {}
     manifest_problem = manifest.get("checked") is True and manifest.get("ok") is not True
     manifest_unchecked = manifest.get("checked") is not True
-    critical = (
+    verification_pending = bool(map_report.get("verification_pending"))
+    verification_stale = bool(map_report.get("verification_stale"))
+    verification_error = bool(map_report.get("verification_error"))
+    critical = (not verification_pending or verification_stale) and (
         integrity["current_dataset_count"] != 1
         or integrity["tile_count_mismatches"] > 0
         or bool(map_report.get("missing_from_dataset_count"))
@@ -502,6 +566,11 @@ def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
     )
 
     reasons: list[str] = []
+    if verification_error:
+        reasons.append("Сверка карты и целостности временно недоступна; запланирован повтор")
+    elif verification_pending:
+        reasons.append("Сверка карты и целостности обновляется; прошлые результаты устарели"
+                       if verification_stale else "Сверка карты и целостности выполняется")
     if sources["failed"]:
         reasons.append(f'Ошибки у {sources["failed"]} настроенных источников')
     if sources["degraded"]:
@@ -533,12 +602,22 @@ def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
     elif not map_report.get("ok"):
         reasons.append("Публикация карты не прошла сверку")
 
-    incident = critical or host.get("backup_healthy") is False or disk_status == "critical"
+    incident = critical or manifest_problem or host.get("backup_healthy") is False or disk_status == "critical"
+    urgent_reasons = []
+    if critical:
+        urgent_reasons.append("Нарушена целостность карты или набора данных")
+    elif manifest_problem:
+        urgent_reasons.append("Публичная доставка карты не подтверждена")
+    if host.get("backup_healthy") is False:
+        urgent_reasons.append("Резервная копия требует внимания")
+    if disk_status == "critical":
+        urgent_reasons.append("Недостаточно свободного места на диске")
+    reasons = urgent_reasons + [reason for reason in reasons if reason not in urgent_reasons]
     degraded = bool(reasons or sources["failed"] or sources["degraded"] or sources["paused_total"] or sources["not_checked"])
     status = "incident" if incident else "degraded" if degraded else "ok"
 
     dataset = map_report.get("dataset") or {}
-    delivery_ok = bool(map_report.get("ok")) and manifest.get("checked") is True and manifest.get("ok") is True
+    delivery_ok = not verification_pending and bool(map_report.get("ok")) and manifest.get("checked") is True and manifest.get("ok") is True
     dataset_ok = (
         dataset.get("status") == "ready"
         and map_report.get("point_count_matches") is True
@@ -566,6 +645,7 @@ def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
         "sources": {key: value for key, value in sources.items() if key != "items"},
         "geo": geo,
         "map": {
+            "checked_at": map_report.get("checked_at"),
             "ok": delivery_ok,
             "delivery_status": delivery_status,
             "db_ok": integrity["current_dataset_count"] == 1,
@@ -591,12 +671,21 @@ def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
         },
         "integrity": {
             **integrity,
+            "checked": not verification_pending,
+            "status": "error" if verification_error else "stale" if verification_stale else "not_checked" if verification_pending else "checked",
+            "checked_at": operational.get("checked_at"),
             "critical_count": 1 if critical else 0,
             "warning_count": warning_count,
         },
         "host": host,
         "data_quality": current_quality,
     }
+
+
+def prepare_reliability_snapshot(session: Session) -> None:
+    if session.get_bind().dialect.name == "postgresql":
+        session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        session.execute(text("SET TRANSACTION READ ONLY"))
 
 
 def reliability_summary(session: Session) -> dict[str, Any]:

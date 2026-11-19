@@ -11,6 +11,7 @@ import {
 import { fetchReliabilitySources, fetchReliabilitySummary } from "./api";
 import type { ReliabilitySource, ReliabilitySummary } from "./api";
 import { moscowTimestamp, relativeTimestamp, timestampEpoch } from "./format";
+import { sourceProblemMessage } from "./sourceMessages";
 import "./reliability.css";
 
 const ru = new Intl.NumberFormat("ru-RU");
@@ -53,7 +54,7 @@ function StatCard({ icon, label, value, sub, onClick }: {
 }
 const moveTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
-export function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: string }) {
+function useReliabilityModel({ refreshToken, role }: { refreshToken: number; role: string }) {
   const [summary, setSummary] = React.useState<ReliabilitySummary | null>(null);
   const [sources, setSources] = React.useState<ReliabilitySource[]>([]);
   const [operations, setOperations] = React.useState<OperationsProgress | null>(null);
@@ -72,14 +73,17 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
   const [showAllProblems, setShowAllProblems] = React.useState(false);
   const [journalFilter, setJournalFilter] = React.useState<JournalFilter>("all");
   const historyFetchedAt = React.useRef(0);
+  const requestVersion = React.useRef(0);
 
   const load = React.useCallback(async () => {
+    const version = ++requestVersion.current;
     setRefreshing(true);
     const readHistory = historyFetchedAt.current === 0 || Date.now() - historyFetchedAt.current >= 300_000;
     const results = await Promise.allSettled([
       fetchReliabilitySummary(), fetchReliabilitySources(), fetchOperationsProgress(), fetchCapabilities(),
       readHistory ? fetchQuality() : Promise.resolve(null),
     ]);
+    if (version !== requestVersion.current) return;
     if (results[0].status === "fulfilled") setSummary(results[0].value);
     if (results[1].status === "fulfilled") setSources(results[1].value.items);
     if (results[2].status === "fulfilled") setOperations(results[2].value);
@@ -101,7 +105,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
   React.useEffect(() => {
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
-    return () => window.clearInterval(timer);
+    return () => { window.clearInterval(timer); requestVersion.current += 1; };
   }, [load, refreshToken]);
 
   const geo = summary?.geo;
@@ -134,11 +138,11 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
     || timestampEpoch(a.last_success_at) - timestampEpoch(b.last_success_at));
   const problems = [
     ...(integrity?.critical_count ? [{ id: "map", name: "Карта и целостность", message: "Обнаружены несоответствия набора карты", severity: "bad", at: map?.published_at || null }] : []),
-    ...(map && !map.ok && !integrity?.critical_count ? [{ id: "map-delivery", name: "Доставка карты", message: "Публичная доставка не подтверждена", severity: "warn", at: map.published_at || null }] : []),
+    ...(map && !map.ok && !integrity?.critical_count ? [{ id: "map-delivery", name: "Доставка карты", message: integrity?.checked === false ? "Сверка карты и целостности выполняется" : "Публичная доставка не подтверждена", severity: map.delivery_status === "failed" ? "bad" : "warn", at: map.checked_at || null }] : []),
     ...(host?.backup_healthy === false ? [{ id: "backup", name: "Резервная копия", message: "Нет подтверждённого успешного восстановления", severity: "bad", at: null }] : []),
     ...((integrity?.active_and_archived || 0) > 0 || (integrity?.date_invariants || 0) > 0 ? [{ id: "invariants", name: "Целостность БД", message: "Нарушены инварианты статусов или дат", severity: "bad", at: null }] : []),
     ...attention.map(s => ({
-      id: s.canonical_id, name: s.display_name_ru, message: s.current_error || (s.retry_overdue ? "Повторная попытка просрочена" : "Полный снимок: " + statusLabel(s.coverage_status) + "; данные: " + statusLabel(s.freshness_status)),
+      id: s.canonical_id, name: s.display_name_ru, message: sourceProblemMessage(s) || ("Полный снимок: " + statusLabel(s.coverage_status) + "; данные: " + statusLabel(s.freshness_status)),
       severity: s.overall_status === "failed" ? "bad" : "warn",
       at: s.last_failure_at || s.last_attempt_at,
     })),
@@ -200,6 +204,14 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
     finally { setAction(""); }
   };
 
+  return { action, backgroundJobs, configured, copy, count, degraded, download, expanded, failed, failure, filterTabs, filteredSources, geo, history, historyChecked, host, integrity, journal, journalFilter, load, loading, map, notChecked, paused, probe, problems, quality, qualityCounts, refreshing, role, setExpanded, setJournalFilter, setShowAllProblems, setSortBy, setSourceFilter, setSourceQuery, showAllProblems, sortBy, sourceDonut, sourceFilter, sourceQuery, sources, stable, stableRatio, staleBlocks, statusTone, summary, systemTitle };
+}
+
+type ReliabilityModel = ReturnType<typeof useReliabilityModel>;
+
+export function ReliabilityView(props: { refreshToken: number; role: string }) {
+  const model = useReliabilityModel(props);
+  const { configured, copy, count, degraded, download, failed, failure, load, loading, notChecked, paused, refreshing, sourceDonut, sources, stable, stableRatio, staleBlocks, summary } = model;
   return <section className="rel-dashboard" aria-label="Надёжность BankrotAI">
     <header className="rel-header">
       <div className="rel-heading"><ShieldCheck size={36} /><div><h1>Надёжность</h1><p>Состояние сбора, обработки и актуальности данных по всем источникам</p></div></div>
@@ -212,18 +224,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
     </header>
     {failure && <div className="rel-warning" role="status"><AlertCircle size={16} />{failure}</div>}
     {loading && !summary ? <div className="rel-loading" role="status"><span /><span /><span />Загружаем результаты проверки…</div> : <>
-      <div className="rel-hero">
-        <div className={"rel-system rel-system--" + statusTone}>
-          {statusTone === "ok" ? <ShieldCheck size={34} /> : statusTone === "bad" ? <ShieldAlert size={34} /> : <AlertTriangle size={34} />}
-          <div><strong>{systemTitle}</strong><p>{summary?.system.reasons[0] || (statusTone === "ok" ? "По подтверждённым проверкам замечаний нет" : "Проверка ещё не завершена")}</p></div>
-        </div>
-        <div className="rel-heroStats">
-          <StatCard icon={<Layers3 />} label="Источники" value={n(stable) + " / " + n(configured)} sub="в штатном режиме · настроенные" onClick={() => moveTo("rel-sources")} />
-          <StatCard icon={<MapPin />} label="GEO" value={pct(geo?.percent)} sub={n(geo?.geocoded) + " с координатами"} onClick={() => moveTo("rel-geo")} />
-          <StatCard icon={<MapIcon />} label="Карта" value={n(map?.point_count)} sub={map?.ok ? "публичная карта проверена" : "доставка требует проверки"} onClick={() => moveTo("rel-map")} />
-          <StatCard icon={<Database />} label="Актуальные лоты" value={n(quality?.population)} sub="текущая рабочая выборка" onClick={() => moveTo("rel-quality")} />
-        </div>
-      </div>
+      <ReliabilityHero model={model} />
       <div className="rel-mainGrid">
         <section className="rel-card">
           <h2><Layers3 size={19} />Общая надёжность источников</h2>
@@ -240,7 +241,45 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
             </div>
           </div>
         </section>
-        <section className="rel-card" id="rel-attention">
+        <AttentionList model={model} />
+      </div>
+      <SourcesTable model={model} />
+      <div className="rel-bottomGrid">
+        <GeoPanel model={model} />
+        <DataQualityPanel model={model} />
+        <InfrastructurePanel model={model} />
+      </div>
+      <MapDeliveryPanel model={model} />
+      <ReliabilityJournal model={model} />
+      <footer className="rel-footer"><span>Версия: {summary?.system.deployment_sha?.slice(0, 8) || "Неизвестно"} · Время всех проверок — Москва</span><button className="rel-action" disabled={!summary} onClick={() => void copy()}><Copy size={15} />Копировать отчёт</button></footer>
+    </>}
+  </section>;
+}
+
+function ReliabilityHero({ model }: { model: ReliabilityModel }) {
+  const { statusTone, summary, systemTitle } = model;
+  return <div className="rel-hero">
+        <div className={"rel-system rel-system--" + statusTone}>
+          {statusTone === "ok" ? <ShieldCheck size={34} /> : statusTone === "bad" ? <ShieldAlert size={34} /> : <AlertTriangle size={34} />}
+          <div><strong>{systemTitle}</strong><p>{summary?.system.reasons[0] || (statusTone === "ok" ? "По подтверждённым проверкам замечаний нет" : "Проверка ещё не завершена")}</p></div>
+        </div>
+        <ReliabilityKpis model={model} />
+      </div>;
+}
+
+function ReliabilityKpis({ model }: { model: ReliabilityModel }) {
+  const { configured, geo, map, quality, stable } = model;
+  return <div className="rel-heroStats">
+          <StatCard icon={<Layers3 />} label="Источники" value={n(stable) + " / " + n(configured)} sub="в штатном режиме · настроенные" onClick={() => moveTo("rel-sources")} />
+          <StatCard icon={<MapPin />} label="GEO" value={pct(geo?.percent)} sub={n(geo?.geocoded) + " с координатами"} onClick={() => moveTo("rel-geo")} />
+          <StatCard icon={<MapIcon />} label="Карта" value={n(map?.point_count)} sub={map?.ok ? "публичная карта проверена" : "доставка требует проверки"} onClick={() => moveTo("rel-map")} />
+          <StatCard icon={<Database />} label="Актуальные лоты" value={n(quality?.population)} sub="текущая рабочая выборка" onClick={() => moveTo("rel-quality")} />
+        </div>;
+}
+
+function AttentionList({ model }: { model: ReliabilityModel }) {
+  const { problems, setShowAllProblems, showAllProblems } = model;
+  return <section className="rel-card" id="rel-attention">
           <div className="rel-cardTitle"><h2><AlertTriangle size={19} />Актуальные проблемы <em>({problems.length})</em></h2><button className="rel-link" onClick={() => setShowAllProblems(v => !v)}>{showAllProblems ? "Свернуть" : "Все проблемы"}</button></div>
           <div className="rel-issues">
             {(showAllProblems ? problems : problems.slice(0, 5)).map(p => <div className="rel-issue" key={p.id}>
@@ -250,9 +289,12 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
             </div>)}
             {!problems.length && <p className="rel-empty">Актуальных проблем по доступным проверкам не обнаружено.</p>}
           </div>
-        </section>
-      </div>
-      <section className="rel-card" id="rel-sources">
+        </section>;
+}
+
+function SourcesTable({ model }: { model: ReliabilityModel }) {
+  const { action, backgroundJobs, expanded, filterTabs, filteredSources, host, probe, role, setExpanded, setSortBy, setSourceFilter, setSourceQuery, sortBy, sourceFilter, sourceQuery, sources } = model;
+  return <section className="rel-card" id="rel-sources">
         <div className="rel-cardTitle"><h2><Layers3 size={19} />Источники данных <span>({sources.length})</span></h2><small>Настроенные, подключённые и исторические · строка на один источник</small></div>
         <div className="rel-toolbar">
           <div className="rel-tabs" role="group" aria-label="Фильтр источников">
@@ -266,7 +308,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
           {filteredSources.map(source => {
             const open = expanded.includes(source.canonical_id);
             const tone = source.overall_status === "healthy" ? "ok" : source.overall_status === "failed" ? "bad" : source.overall_status === "degraded" ? "warn" : "neutral";
-            const message = source.current_error || (source.retry_overdue ? "Повтор просрочен" : "—");
+            const message = sourceProblemMessage(source) || "—";
             return <React.Fragment key={source.canonical_id}>
               <button type="button" className="rel-tableRow" role="row" aria-expanded={open} onClick={() => setExpanded(prev => open ? prev.filter(id => id !== source.canonical_id) : [...prev, source.canonical_id])}>
                 <span className="rel-sourceName"><i aria-hidden="true">{source.display_name_ru.slice(0, 1).toUpperCase()}</i><strong>{source.display_name_ru}</strong><small>{source.canonical_id}</small></span>
@@ -278,29 +320,40 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
                 <span className="rel-mono">+{n(source.last_items_inserted)} / Δ{n(source.last_items_updated)}</span>
                 <span className="rel-ellipsis" title={message}>{message}</span><ChevronDown className={open ? "rel-flip" : ""} size={17} />
               </button>
-              {open && <div className="rel-rowDetails"><div><b>Последний успех</b><span>{moscow(source.last_success_at)}</span></div><div><b>Полный снимок</b><span>{moscow(source.last_complete_success_at)}</span></div><div><b>Повтор</b><span>{source.retry_overdue ? "Просрочен: " : ""}{moscow(source.next_retry_at)}</span></div><div><b>Соединение</b><span>{statusLabel(source.circuit_state)}</span></div><div><b>Добавлено / обновлено / архивировано</b><span>{n(source.last_items_inserted)} / {n(source.last_items_updated)} / {n(source.last_items_archived)}</span></div><div><b>Исторические имена</b><span>{source.aliases.length ? source.aliases.join(", ") : "Нет"}</span></div>{source.last_historical_error && <p>Историческая ошибка: {source.last_historical_error.slice(0, 300)}</p>}{role === "admin" && backgroundJobs && !host?.read_only && source.registered && <button className="rel-action" disabled={Boolean(action)} onClick={() => void probe(source)}><RefreshCcw size={14} />Проверить источник</button>}</div>}
+              {open && <div className="rel-rowDetails"><div><b>Последний успех</b><span>{moscow(source.last_success_at)}</span></div><div><b>Полный снимок</b><span>{moscow(source.last_complete_success_at)}</span></div><div><b>Повтор</b><span>{source.retry_overdue ? "Просрочен: " : ""}{moscow(source.next_retry_at)}</span></div><div><b>Соединение</b><span>{statusLabel(source.circuit_state)}</span></div><div><b>Добавлено / обновлено / архивировано</b><span>{n(source.last_items_inserted)} / {n(source.last_items_updated)} / {n(source.last_items_archived)}</span></div><div><b>Исторические имена</b><span>{source.aliases.length ? source.aliases.join(", ") : "Нет"}</span></div>{source.current_error && <p>Техническая ошибка: {source.current_error}</p>}{source.last_historical_error && <p>Историческая ошибка: {source.last_historical_error.slice(0, 300)}</p>}{role === "admin" && backgroundJobs && !host?.read_only && source.registered && <button className="rel-action" disabled={Boolean(action)} onClick={() => void probe(source)}><RefreshCcw size={14} />Проверить источник</button>}</div>}
             </React.Fragment>;
           })}
           {!filteredSources.length && <p className="rel-empty">Источники по заданным условиям не найдены.</p>}
         </div></div>
         <p className="rel-footnote">«За проход» — число просмотренных записей последней синхронизации, не объём базы. Текущая ошибка не включает сбои, закрытые более поздним успешным проходом.</p>
-      </section>
-      <div className="rel-bottomGrid">
-        <section className="rel-card" id="rel-geo">
+      </section>;
+}
+
+function GeoPanel({ model }: { model: ReliabilityModel }) {
+  const { geo } = model;
+  return <section className="rel-card" id="rel-geo">
           <h2><MapPin size={19} />GEO · координаты</h2>
           <div className="rel-geoNumbers"><div><strong>{n(geo?.geocoded)}</strong><small>с текущими координатами</small></div><div><strong>{pct(geo?.percent)}</strong><small>покрытие выборки</small></div></div>
           <div className="rel-progress" role="progressbar" aria-label="Покрытие GEO" aria-valuenow={geo?.percent ?? 0} aria-valuemin={0} aria-valuemax={100}><span style={{ width: String(Math.min(100, Math.max(0, geo?.percent || 0))) + "%" }} /></div>
           <p className="rel-footnote" title={geo?.scope_description_ru}>Объектов в текущей GEO-выборке: {n(geo?.total)}. {geo?.scope_description_ru}</p>
           <div className="rel-kv"><div><Dot tone="warn" />Требуют обработки <b>{n(geo?.actionable_remaining)}</b></div><div><Dot tone="warn" />Соответствие не найдено <b>{n(geo?.deferred_no_match)}</b></div><div><Dot tone="bad" />Не прошло проверку <b>{n(geo?.deferred_validation)}</b></div><div><Dot tone="neutral" />Ожидание сети <b>{n(geo?.network_wait)}</b></div><div><Dot tone="neutral" />Отложено очередью <b>{n(geo?.p7_held)}</b></div><div><Dot tone="neutral" />Недостаточно данных <b>{n(geo?.deferred_bad_input)}</b></div></div>
-        </section>
-        <section className="rel-card" id="rel-quality">
+        </section>;
+}
+
+function DataQualityPanel({ model }: { model: ReliabilityModel }) {
+  const { history, historyChecked, quality, qualityCounts } = model;
+  return <section className="rel-card" id="rel-quality">
           <h2><Database size={19} />Полнота и качество данных</h2>
           <div className="rel-qualityIntro"><span>Актуальных публикаций</span><strong>{n(quality?.population)}</strong></div>
           <div className="rel-kv">{qualityItems.map(([key, label, tone]) => <div key={key}><Dot tone={tone} />{label}<b>{n(qualityCounts[key])} <small>{quality?.percentages?.[key] == null ? "—" : pct(quality.percentages[key])}</small></b></div>)}</div>
           <details className="rel-history"><summary>Историческая база <ChevronDown size={15} /></summary>{historyChecked && history ? <div className="rel-kv"><div>Всего записей <b>{n(history.total_lots)}</b></div><div>Активные по статусу (история) <b>{n(history.active_lots)}</b></div><div>Архивные <b>{n(history.archived_lots)}</b></div><div>Дубликаты <b>{n(history.duplicate_lots)}</b></div><div>Исторические GEO-снимки <b>{n(history.geocoded_lots)}</b></div></div> : <p>Историческая проверка недоступна</p>}</details>
           <p className="rel-footnote">Проценты рассчитаны только от текущей рабочей выборки. Историческая база не влияет на этот знаменатель.</p>
-        </section>
-        <section className="rel-card" id="rel-infra">
+        </section>;
+}
+
+function InfrastructurePanel({ model }: { model: ReliabilityModel }) {
+  const { configured, degraded, failed, host, stable } = model;
+  return <section className="rel-card" id="rel-infra">
           <h2><Server size={19} />Инфраструктура</h2>
           <div className="rel-infra">
             <div><HardDrive size={18} /><span>Свободно на диске</span><b className={host?.disk?.status === "unknown" || host?.disk?.free_gb == null ? "rel-textNeutral" : host.disk.free_gb < 15 ? "rel-textBad" : host.disk.free_gb < 25 ? "rel-textWarn" : "rel-textOk"}>{host?.disk?.free_gb == null ? "Нет данных" : host.disk.free_gb.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ГБ"}<small>Норма от 25 ГБ · критично ниже 15 ГБ</small></b></div>
@@ -311,25 +364,31 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
             <div><Layers3 size={18} /><span>Источники</span><b className={failed || degraded ? "rel-textWarn" : "rel-textOk"}>{n(stable)} из {n(configured)} без замечаний<small>Данные планового сбора</small></b></div>
           </div>
           <button className="rel-link" onClick={() => moveTo("rel-map")}>Детальная проверка доставки карты</button>
-        </section>
-      </div>
-      <section className="rel-card" id="rel-map">
-        <div className="rel-cardTitle"><h2><MapIcon size={19} />Карта: доставка и целостность</h2><span className={"rel-pill rel-pill--" + (map?.ok ? "ok" : "warn")}>{map?.ok ? "Проверена" : "Не подтверждена"}</span></div>
+        </section>;
+}
+
+function MapDeliveryPanel({ model }: { model: ReliabilityModel }) {
+  const { integrity, map } = model;
+  const failed = map?.delivery_status === "failed";
+  return <section className="rel-card" id="rel-map">
+        <div className="rel-cardTitle"><h2><MapIcon size={19} />Карта: доставка и целостность</h2><span className={"rel-pill rel-pill--" + (map?.ok ? "ok" : failed ? "bad" : "warn")}>{map?.ok ? "Проверена" : failed ? "Ошибка доставки" : "Не подтверждена"}</span></div>
+        {integrity?.checked === false && <p className="rel-footnote" role="status">{integrity.status === "error" ? "Сверка временно недоступна. Повтор запланирован автоматически." : integrity.status === "stale" ? "Показаны прошлые результаты. Сверка обновляется." : "Сверка выполняется в фоне. Результаты пока не подтверждены."}</p>}
         <div className="rel-delivery">
           {[
             ["База данных", integrity?.current_dataset_count === 1, "Текущих наборов: " + n(integrity?.current_dataset_count)],
             ["Набор карты", map?.dataset_status === "ready" && map?.point_count_matches === true && map?.tile_count_matches === true, "Версия: " + (map?.dataset_version || "нет")],
-            ["Публичный манифест", map?.public_manifest?.checked && map?.public_manifest?.ok === true, map?.public_manifest?.checked ? "Сверены версия и размеры" : "Не проверялся"],
+            ["Публичный манифест", map?.public_manifest?.checked && map?.public_manifest?.ok === true, map?.public_manifest?.checked ? map.public_manifest.ok === true ? "Сверены версия и размеры" : "Проверка выявила ошибку" : "Проверка ожидается"],
             ["Согласованность", map?.ok, "Отсутствуют: " + n(map?.missing_from_dataset_count) + " · лишние: " + n(map?.extra_in_dataset_count)],
           ].map(([name, checked, detail]) => <div key={String(name)}><span>{checked ? <CheckCircle2 size={19} className="rel-textOk" /> : <XCircle size={19} className="rel-textWarn" />}</span><b>{name}</b><small>{detail}</small></div>)}
         </div>
-        <p className="rel-footnote">Опубликовано: {moscow(map?.published_at)} · После публикации ожидают следующей сборки: {n(map?.pending_missing_count)} новых и {n(map?.pending_extra_count)} исключаемых объектов. Проверка манифеста кешируется 5 минут.</p>
-      </section>
-      <section className="rel-card" id="rel-journal">
+        <p className="rel-footnote">Опубликовано: {moscow(map?.published_at)} · Сверка базы: {moscow(map?.checked_at)} · После публикации ожидают следующей сборки: {n(map?.pending_missing_count)} новых и {n(map?.pending_extra_count)} исключаемых объектов. Проверка манифеста кешируется 5 минут.</p>
+      </section>;
+}
+
+function ReliabilityJournal({ model }: { model: ReliabilityModel }) {
+  const { journal, journalFilter, setJournalFilter } = model;
+  return <section className="rel-card" id="rel-journal">
         <div className="rel-cardTitle"><h2><Clock3 size={19} />Журнал операций</h2><div className="rel-tabs" role="group" aria-label="Фильтр журнала">{([["all", "Все"], ["errors", "Ошибки"], ["sources", "Источники"], ["geo", "GEO"]] as Array<[JournalFilter, string]>).map(([key, value]) => <button key={key} className={"rel-tab" + (journalFilter === key ? " is-active" : "")} aria-pressed={journalFilter === key} onClick={() => setJournalFilter(key)}>{value}</button>)}</div></div>
         <div className="rel-journal">{journal.slice(0, 60).map((item, i) => <div key={item.kind + String(i)}><span className={"rel-pill rel-pill--" + (item.status === "failed" ? "bad" : item.status === "success" || item.status === "completed" ? "ok" : "warn")}>{statusLabel(item.status)}</span><strong>{item.title}</strong><span>{item.detail}</span><small>{moscow(item.at)}</small></div>)}{!journal.length && <p className="rel-empty">Событий для выбранного фильтра нет.</p>}</div>
-      </section>
-      <footer className="rel-footer"><span>Версия: {summary?.system.deployment_sha?.slice(0, 8) || "Неизвестно"} · Время всех проверок — Москва</span><button className="rel-action" disabled={!summary} onClick={() => void copy()}><Copy size={15} />Копировать отчёт</button></footer>
-    </>}
-  </section>;
+      </section>;
 }
