@@ -117,3 +117,18 @@
 .appShell.appShell--reliability .appWorkspace>.viewContainer{margin:0;width:100%;max-width:none;padding:14px 16px 0}
 .appShell.appShell--reliability .appWorkspace>.globalClock{background:transparent;border-top:0}
 @media(max-width:800px){.appShell.appShell--reliability{grid-template-columns:56px minmax(0,1fr)}.appShell.appShell--reliability .appRail{padding:10px 5px}.appShell.appShell--reliability .appRail button{width:44px;justify-content:center;padding:0;gap:0}.appShell.appShell--reliability .appRailText{display:none}.appShell.appShell--reliability .appWorkspace>.viewContainer{padding:12px 9px 0}}
+
+.rel-dashboard{max-width:1440px;margin-inline:auto;font-size:13px;gap:16px}
+.rel-statBody strong{font-size:24px}
+.rel-table{font-size:12px}
+.rel-footnote{font-size:12px}
+button.rel-issue{width:100%;border:0;border-bottom:1px solid var(--rel-line);background:transparent;text-align:left;color:inherit;font:inherit;cursor:pointer}
+button.rel-issue:hover{background:#f2f7ff}
+@media(min-width:801px){.appShell.appShell--reliability .appWorkspace>.viewContainer{padding:24px 24px 0}}
+@media(min-width:768px) and (max-width:1199px){.rel-heroStats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:767px){
+  .rel-mainGrid,.rel-bottomGrid{display:contents}
+  .rel-header{order:0}.rel-hero{order:1}#rel-attention{order:2}#rel-geo{order:3}#rel-map{order:4}
+  #rel-source-overview{order:5}#rel-quality{order:6}#rel-infra{order:7}#rel-sources{order:8}
+  #rel-journal{order:9}.rel-footer{order:10}
+}

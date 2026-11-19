@@ -87,6 +87,18 @@ describe("Reliability acceptance gaps", () => {
     expect(await screen.findByText(/Техническая ошибка: HTTPConnectionPool/)).toBeVisible();
   });
 
+  it("opens a source problem even when the table filter hides that source", async () => {
+    vi.mocked(fetchReliabilitySources).mockResolvedValue({ items: [source("Проверяемый", "failed")] } as Awaited<ReturnType<typeof fetchReliabilitySources>>);
+    render(<ReliabilityView refreshToken={0} role="reader" />);
+    await screen.findByRole("table");
+    fireEvent.click(screen.getByRole("button", { name: /Стабильные/ }));
+    expect(screen.getByText("Источники по заданным условиям не найдены.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Проверяемый/ }));
+    const table = screen.getByRole("table");
+    await waitFor(() => expect(within(table).getAllByRole("row")[1]).toHaveAttribute("aria-expanded", "true"));
+    expect(screen.getByText("Исторические имена")).toBeVisible();
+  });
+
   it("downloads a JSON report without rendering raw JSON on the page", async () => {
     const create = vi.fn((blob: Blob) => "blob:diagnostics-" + blob.size);
     Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true });

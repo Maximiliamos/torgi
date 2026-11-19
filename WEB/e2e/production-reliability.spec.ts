@@ -87,10 +87,17 @@ test("Reliability data and layout: desktop, tablet and mobile", async ({ page },
       scrollWidth: document.documentElement.scrollWidth,
       dashboardWidth: Math.round(document.querySelector(".rel-dashboard")!.getBoundingClientRect().width),
       navigationWidth: Math.round(document.querySelector(".appRail")!.getBoundingClientRect().width),
+      geoTop: document.querySelector("#rel-geo")!.getBoundingClientRect().top,
+      mapTop: document.querySelector("#rel-map")!.getBoundingClientRect().top,
+      sourcesTop: document.querySelector("#rel-sources")!.getBoundingClientRect().top,
     }));
     expect(layout.scrollWidth - layout.width, viewport.label + " must not overflow horizontally").toBeLessThanOrEqual(2);
     if (viewport.width >= 1024) expect(layout.navigationWidth).toBeGreaterThanOrEqual(180);
-    else expect(layout.navigationWidth).toBeLessThanOrEqual(70);
+    else {
+      expect(layout.navigationWidth).toBeLessThanOrEqual(70);
+      expect(layout.geoTop).toBeLessThan(layout.sourcesTop);
+      expect(layout.mapTop).toBeLessThan(layout.sourcesTop);
+    }
     expect(layout.dashboardWidth).toBeGreaterThan(200);
     const screenshotPath = testInfo.outputPath("reliability-" + viewport.label + ".png");
     await page.screenshot({ path: screenshotPath, fullPage: true, animations: "disabled" });

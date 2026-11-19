@@ -226,7 +226,7 @@ export function ReliabilityView(props: { refreshToken: number; role: string }) {
     {loading && !summary ? <div className="rel-loading" role="status"><span /><span /><span />Загружаем результаты проверки…</div> : <>
       <ReliabilityHero model={model} />
       <div className="rel-mainGrid">
-        <section className="rel-card">
+        <section className="rel-card" id="rel-source-overview">
           <h2><Layers3 size={19} />Общая надёжность источников</h2>
           <div className="rel-chartRow">
             <div className="rel-donut" style={{ background: count ? sourceDonut : "#e4e8f0" }} aria-label={pct(count ? stableRatio : null) + " настроенных источников стабильны"}>
@@ -278,15 +278,25 @@ function ReliabilityKpis({ model }: { model: ReliabilityModel }) {
 }
 
 function AttentionList({ model }: { model: ReliabilityModel }) {
-  const { problems, setShowAllProblems, showAllProblems } = model;
+  const { problems, setShowAllProblems, showAllProblems, sources, setSourceFilter, setSourceQuery, setExpanded } = model;
+  const openProblem = (id: string) => {
+    if (sources.some(source => source.canonical_id === id)) {
+      setSourceFilter("all"); setSourceQuery("");
+      setExpanded(previous => previous.includes(id) ? previous : [...previous, id]);
+      window.requestAnimationFrame(() => {
+        const row = document.getElementById("rel-source-" + id);
+        row?.scrollIntoView?.({ behavior: "smooth", block: "center" }); row?.focus();
+      });
+    } else moveTo(id === "backup" || id === "runner" ? "rel-infra" : id === "invariants" ? "rel-quality" : "rel-map");
+  };
   return <section className="rel-card" id="rel-attention">
           <div className="rel-cardTitle"><h2><AlertTriangle size={19} />Актуальные проблемы <em>({problems.length})</em></h2><button className="rel-link" onClick={() => setShowAllProblems(v => !v)}>{showAllProblems ? "Свернуть" : "Все проблемы"}</button></div>
           <div className="rel-issues">
-            {(showAllProblems ? problems : problems.slice(0, 5)).map(p => <div className="rel-issue" key={p.id}>
+            {(showAllProblems ? problems : problems.slice(0, 5)).map(p => <button type="button" className="rel-issue" key={p.id} onClick={() => openProblem(p.id)}>
               <span className="rel-issueName">{p.name}</span><span title={p.message} className="rel-issueMessage">{p.message}</span>
               <span className="rel-issueDate" title={moscow(p.at)}>{age(p.at)}</span>
               <span className={"rel-pill rel-pill--" + p.severity}>{p.severity === "bad" ? "Высокий" : "Средний"}</span>
-            </div>)}
+            </button>)}
             {!problems.length && <p className="rel-empty">Актуальных проблем по доступным проверкам не обнаружено.</p>}
           </div>
         </section>;
@@ -310,7 +320,7 @@ function SourcesTable({ model }: { model: ReliabilityModel }) {
             const tone = source.overall_status === "healthy" ? "ok" : source.overall_status === "failed" ? "bad" : source.overall_status === "degraded" ? "warn" : "neutral";
             const message = sourceProblemMessage(source) || "—";
             return <React.Fragment key={source.canonical_id}>
-              <button type="button" className="rel-tableRow" role="row" aria-expanded={open} onClick={() => setExpanded(prev => open ? prev.filter(id => id !== source.canonical_id) : [...prev, source.canonical_id])}>
+              <button type="button" id={"rel-source-" + source.canonical_id} className="rel-tableRow" role="row" aria-expanded={open} onClick={() => setExpanded(prev => open ? prev.filter(id => id !== source.canonical_id) : [...prev, source.canonical_id])}>
                 <span className="rel-sourceName"><i aria-hidden="true">{source.display_name_ru.slice(0, 1).toUpperCase()}</i><strong>{source.display_name_ru}</strong><small>{source.canonical_id}</small></span>
                 <span><span className={"rel-pill rel-pill--" + tone}><Dot tone={tone} />{statusLabel(source.overall_status)}</span></span>
                 <span><span className={"rel-pill rel-pill--" + (source.freshness_status === "fresh" ? "ok" : source.freshness_status === "stale" || source.freshness_status === "failed" ? "bad" : "warn")}>{statusLabel(source.freshness_status)}</span></span>
