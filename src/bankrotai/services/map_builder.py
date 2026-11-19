@@ -571,6 +571,13 @@ def _promote_map_dataset(
                 "minimum_point_count": minimum_points,
             }
 
+        # Recheck source/region certificates under the same locks as promotion.
+        # Proof metadata can change without changing marker coordinates.
+        if current is not None and not dimension_failures:
+            dimension_failures = _dimension_coverage_failures(
+                session, current_dataset_id=current.id, new_dataset_id=dataset.id,
+                minimum_ratio=settings.min_map_coverage_ratio,
+            )
         if dimension_failures:
             dataset.status = "rejected"
             session.commit()

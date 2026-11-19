@@ -1,7 +1,7 @@
 from datetime import datetime
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from bankrotai.db import AuditLog, Base, CanonicalLot, LotGeoSnapshot, MapDataset, ProcessedLot, SourceLot
@@ -98,8 +98,8 @@ def test_unverified_terminal_status_cannot_discount_baseline(invalid):
     assert certificate(invalid, terminal=True) == set()
 
 
-@pytest.mark.parametrize("surviving,tamper,expected", [(10, False, "published"), (3, False, "rejected"), (10, True, "rejected")])
-def test_same_global_and_dimensional_ratios_still_protect_uncertified_population(monkeypatch, surviving, tamper, expected):
+@pytest.mark.parametrize("surviving,tamper,expected,late_tamper", [(10, False, "published", False), (3, False, "rejected", False), (10, True, "rejected", False), (10, False, "rejected", True)])
+def test_same_global_and_dimensional_ratios_still_protect_uncertified_population(monkeypatch, surviving, tamper, expected, late_tamper):
     from types import SimpleNamespace
     from sqlalchemy.orm import sessionmaker
     from bankrotai.db import MapTile
@@ -127,15 +127,25 @@ def test_same_global_and_dimensional_ratios_still_protect_uncertified_population
                            metadata_json={"reason": "region_only_address", "snapshot_id": snapshot.id,
                                           "snapshot_state_sha256": "wrong" if tamper else _state(snapshot, None),
                                           "source_fact_changes": 0, "historical_snapshots_deleted": 0}))
+        extra = [ProcessedLot(source_system="unaffected", external_id=f"other:{i}", title="Land", category="land",
+                              region_code="77", auction_status="active") for i in range(100)] if late_tamper else []
+        s.add_all(extra); s.flush()
+        old.point_count += len(extra); new.point_count += len(extra)
         def features(rows):
             return {"features": [{"kind": "lot", "id": p.id, "lat": 57.6, "lon": 39.8} for p in rows]}
-        s.add_all([MapTile(dataset_id=old.id, z=12, x=1, y=1, etag="old", feature_count=40, payload_json=features(lots)),
-                   MapTile(dataset_id=new.id, z=12, x=1, y=1, etag="new", feature_count=surviving, payload_json=features(lots[30:30+surviving]))])
+        s.add_all([MapTile(dataset_id=old.id, z=12, x=1, y=1, etag="old", feature_count=old.point_count, payload_json=features(lots+extra)),
+                   MapTile(dataset_id=new.id, z=12, x=1, y=1, etag="new", feature_count=new.point_count, payload_json=features(lots[30:30+surviving]+extra))])
         s.commit(); old_id, new_id = old.id, new.id
         failures = map_builder._dimension_coverage_failures(s, current_dataset_id=old_id, new_dataset_id=new_id, minimum_ratio=0.5)
-        assert bool(failures) == (expected == "rejected")
+        assert bool(failures) == (expected == "rejected" and not late_tamper)
+        if late_tamper:
+            for event in s.scalars(select(AuditLog)):
+                event.metadata_json = {**event.metadata_json, "snapshot_state_sha256": "changed-after-preflight"}
+            s.commit()
     result = map_builder._promote_map_dataset(factory, dataset_id=new_id, expected_current_id=old_id, dimension_failures=failures)
     assert result["status"] == expected
+    if late_tamper:
+        assert result["reason"] == "dataset_dimension_coverage_below_threshold"
     if expected == "published":
         assert result["certified_obsolete_previous_members"] == 30
     with factory() as s:
