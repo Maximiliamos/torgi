@@ -6,16 +6,15 @@ import {
   NotebookPen, RefreshCcw, Search, ShieldCheck, Sparkles, Star, X
 } from "lucide-react";
 import {
-  addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCapabilities, fetchCurrentUser, fetchDiagnostics, fetchDocuments,
+  addNote, ApiError, AuthUser, calculateMaxBid, compareDocuments, fetchCurrentUser, fetchDocuments,
   fetchLotDetail, fetchLots, fetchMaxBidScenarios, fetchNotes, fetchParticipation, fetchProcedure, fetchRegions, fetchServerTime,
   fetchSavedSearches, fetchStats, fetchTBankrotAuthStatus, fetchWatchlist, importOnlineLot, login, logout, LotDetail, LotDocument, LotListItem, LotQuery, mergeLots,
-  clearMapCache, fetchOperationsProgress, MainView, MaxBidScenario, OnlineLot, OperationsProgress, Participation, pauseGeocoding, probeSourceHealth, Procedure, RegionOption, resumeGeocoding, saveParticipation, searchOnline,
+  clearMapCache, MainView, MaxBidScenario, OnlineLot, Participation, Procedure, RegionOption, saveParticipation, searchOnline,
   saveSearch, SearchSource, SortMode, splitLot, StatsResponse, toggleWatchlist
 } from "./lib/api";
 import { MapView } from "./features/map/MapView";
 import { TBankrotView } from "./features/tbankrot/TBankrotView";
-import { fetchReliabilitySources, fetchReliabilitySummary } from "./features/reliability/api";
-import type { ReliabilitySource, ReliabilitySummary } from "./features/reliability/api";
+import { ReliabilityView } from "./features/reliability/ReliabilityView";
 import "./styles.css";
 
 const CATEGORIES = [
@@ -178,240 +177,6 @@ function DealView({ selectedLotId }: { selectedLotId: number | null }) {
 }
 
 
-const reliabilityLabels: Record<string, string> = {
-  healthy: "Норма", success: "Успешно", completed: "Завершено", partial: "Частично",
-  failed: "Ошибка", paused: "На паузе", fresh: "Актуально", delayed: "С задержкой",
-  stale: "Устарело", missing: "Нет снимка", closed: "Соединение разрешено",
-  open: "Соединение отключено", half_open: "Проверка восстановления",
-  ready: "Подготовлена", running: "Выполняется", queued: "В очереди",
-  actionable: "Требует обработки", deferred_no_match: "Соответствие не найдено",
-  deferred_validation: "Не прошло проверку", network_wait: "Ожидание сети",
-};
-const reliabilityText = (value: string | null | undefined) =>
-  value ? (reliabilityLabels[value] || "Неизвестно") : "Нет данных";
-const reliabilityCount = (value: number | null | undefined) =>
-  typeof value === "number" ? value.toLocaleString("ru-RU") : "—";
-const reliabilityDate = (value: string | null | undefined) =>
-  value ? new Date(value).toLocaleString("ru-RU", { timeZone: "Europe/Moscow" }) + " МСК" : "Нет данных";
-function ReliabilityView({ refreshToken, role }: { refreshToken: number; role: string }) {
-  const [summary, setSummary] = React.useState<ReliabilitySummary | null>(null);
-  const [sources, setSources] = React.useState<ReliabilitySource[]>([]);
-  const [operations, setOperations] = React.useState<OperationsProgress | null>(null);
-  const [backgroundJobs, setBackgroundJobs] = React.useState(false);
-  const [error, setError] = React.useState("");
-  const [action, setAction] = React.useState("");
-  const [sourceFilter, setSourceFilter] = React.useState("all");
-  const [sourceQuery, setSourceQuery] = React.useState("");
-  const [expandedSources, setExpandedSources] = React.useState<string[]>([]);
-
-  const load = React.useCallback(async () => {
-    const results = await Promise.allSettled([
-      fetchReliabilitySummary(),
-      fetchReliabilitySources(),
-      fetchOperationsProgress(),
-      fetchCapabilities(),
-    ]);
-    if (results[0].status === "fulfilled") setSummary(results[0].value);
-    if (results[1].status === "fulfilled") setSources(results[1].value.items);
-    if (results[2].status === "fulfilled") setOperations(results[2].value);
-    if (results[3].status === "fulfilled") setBackgroundJobs(Boolean(results[3].value.background_jobs));
-    const failures = results.filter((item) => item.status === "rejected");
-    setError(failures.length ? `Не удалось обновить ${failures.length} из 4 блоков. Последние успешные данные сохранены.` : "");
-  }, []);
-
-  React.useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => void load(), 30_000);
-    return () => window.clearInterval(timer);
-  }, [load, refreshToken]);
-
-  const geo = summary?.geo;
-  const map = summary?.map;
-  const host = summary?.host;
-  const sourceCounts = summary?.sources;
-  const quality = summary?.data_quality;
-  const integrity = summary?.integrity;
-  const systemStatus = summary?.system.status || "unknown";
-  const systemTitle = systemStatus === "ok" ? "Система работает стабильно"
-    : systemStatus === "incident" ? "Требуется вмешательство"
-    : systemStatus === "degraded" ? "Система работает с ограничениями" : "Нет свежих данных";
-  const systemTone = systemStatus === "ok" ? "ok" : systemStatus === "incident" ? "bad" : "";
-  const diskFree = host?.disk?.free_gb;
-  const configuredTotal = sourceCounts?.configured_total || 0;
-  const stableSources = sourceCounts?.healthy || 0;
-  const degradedSources = sourceCounts?.degraded || 0;
-  const failedSources = sourceCounts?.failed || 0;
-  const pausedSources = sourceCounts?.paused_total || 0;
-  const stablePercent = configuredTotal ? Math.round(stableSources / configuredTotal * 100) : 0;
-  const degradedPercent = configuredTotal ? Math.round(degradedSources / configuredTotal * 100) : 0;
-  const failedPercent = configuredTotal ? Math.round(failedSources / configuredTotal * 100) : 0;
-  const donutBackground = `conic-gradient(#21a35b 0 ${stablePercent}%, #f2b31b ${stablePercent}% ${stablePercent + degradedPercent}%, #ef4444 ${stablePercent + degradedPercent}% ${stablePercent + degradedPercent + failedPercent}%, #d9e0e7 ${stablePercent + degradedPercent + failedPercent}% 100%)`;
-
-  const attentionSources = sources.filter((item) => item.configured && item.overall_status !== "healthy");
-  const filteredSources = sources.filter((item) => {
-    if (sourceFilter === "problems" && item.overall_status === "healthy") return false;
-    if (sourceFilter === "healthy" && item.overall_status !== "healthy") return false;
-    if (sourceFilter === "configured" && !item.configured) return false;
-    return [item.display_name_ru, item.canonical_id, ...item.aliases].join(" ").toLowerCase().includes(sourceQuery.trim().toLowerCase());
-  });
-
-  const runAction = async (label: string, operation: () => Promise<unknown>) => {
-    setAction(label);
-    try { await operation(); await load(); }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-    finally { setAction(""); }
-  };
-  const downloadDiagnostics = async () => {
-    try {
-      const data = await fetchDiagnostics();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url; anchor.download = "bankrotai-diagnostics.json"; anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
-  };
-  const qualityPercent = (key: string) => quality?.percentages?.[key] != null ? `${quality.percentages[key].toFixed(1)}%` : "—";
-
-  return <section className="operationsDashboard reliabilityDashboard">
-    <section className="pageCard reliabilityHero">
-      <div className={`reliabilitySystemStatus ${systemTone}`}>
-        <ShieldCheck size={28} />
-        <div><h2>{systemTitle}</h2><p>{summary?.system.reasons[0] || "Критических замечаний по доступным проверкам нет."}</p></div>
-      </div>
-      <div className="reliabilityHeroKpis">
-        <div><span>Источники</span><strong>{stableSources} / {configuredTotal || "—"}</strong><small>стабильны сейчас</small></div>
-        <div><span>GEO</span><strong>{geo ? `${geo.percent.toFixed(1)}%` : "—"}</strong><small>{reliabilityCount(geo?.geocoded)} с координатами</small></div>
-        <div><span>Карта</span><strong>{reliabilityCount(map?.point_count)}</strong><small>{map?.ok ? "набор данных согласован" : "требует проверки"}</small></div>
-        <div><span>Актуальные лоты</span><strong>{reliabilityCount(quality?.population)}</strong><small>рабочая выборка</small></div>
-      </div>
-      <div className="reliabilityHeroMeta">
-        <span>Production</span>
-        <small>Обновлено: {reliabilityDate(summary?.generated_at)}</small>
-        {summary?.system.deployment_sha && <small>Версия: {summary.system.deployment_sha.slice(0, 8)}</small>}
-      </div>
-    </section>
-
-    <section className="reliabilityTopGrid">
-      <div className="pageCard">
-        <h2>Общая надёжность источников</h2>
-        <div className="reliabilitySourceOverview">
-          <div className="reliabilityDonut" style={{ background: donutBackground }}><div><strong>{stablePercent}%</strong><span>стабильны</span></div></div>
-          <div className="reliabilityLegend">
-            <p><i className="dot ok" /><span>Работают стабильно</span><strong>{stableSources}</strong></p>
-            <p><i className="dot warn" /><span>Требуют внимания</span><strong>{degradedSources}</strong></p>
-            <p><i className="dot bad" /><span>С ошибками</span><strong>{failedSources}</strong></p>
-            <p><i className="dot muted" /><span>На паузе / без проверки</span><strong>{pausedSources + (sourceCounts?.not_checked || 0)}</strong></p>
-            <small>Настроенных источников: {configuredTotal}</small>
-          </div>
-        </div>
-      </div>
-
-      <div className="pageCard">
-        <div className="reliabilitySectionTitle"><h2>Актуальные проблемы <span>({attentionSources.length + (integrity?.critical_count || 0)})</span></h2><small>Сначала критичные</small></div>
-        <div className="reliabilityProblemList">
-          {integrity?.critical_count ? <article><span className="healthBadge bad">Критично</span><div><strong>Целостность карты / набора данных</strong><small>Есть расхождения, требующие проверки перед публикацией.</small></div></article> : null}
-          {attentionSources.slice(0, 6).map((item) => <article key={item.canonical_id}>
-            <span className={`healthBadge ${item.overall_status === "failed" ? "bad" : ""}`}>{item.overall_status === "failed" ? "Высокий" : "Средний"}</span>
-            <div><strong>{item.display_name_ru}</strong><small>{item.current_error || `Данные: ${reliabilityText(item.freshness_status)} · снимок: ${reliabilityText(item.coverage_status)}`}</small></div>
-          </article>)}
-          {!attentionSources.length && !integrity?.critical_count && <p className="reliabilityEmpty">Актуальных проблем по настроенным источникам не обнаружено.</p>}
-        </div>
-      </div>
-    </section>
-
-    <section className="pageCard">
-      <div className="reliabilitySectionTitle"><div><h2>Источники данных ({configuredTotal})</h2><small>Настроенные, подключённые и исторические источники разделены backend-моделью.</small></div></div>
-      <div className="reliabilityFilters">
-        <div className="reliabilityTabs">
-          <button className={sourceFilter === "all" ? "active" : ""} onClick={() => setSourceFilter("all")}>Все <b>{sources.length}</b></button>
-          <button className={sourceFilter === "configured" ? "active" : ""} onClick={() => setSourceFilter("configured")}>Настроенные <b>{configuredTotal}</b></button>
-          <button className={sourceFilter === "healthy" ? "active" : ""} onClick={() => setSourceFilter("healthy")}>Стабильные <b>{stableSources}</b></button>
-          <button className={sourceFilter === "problems" ? "active" : ""} onClick={() => setSourceFilter("problems")}>С проблемами <b>{attentionSources.length}</b></button>
-        </div>
-        <label className="reliabilitySearch"><Search size={15} /><input value={sourceQuery} onChange={(e) => setSourceQuery(e.target.value)} placeholder="Поиск по источнику…" /></label>
-      </div>
-      <div className="reliabilitySourceTable" role="table" aria-label="Состояние источников">
-        <div className="reliabilitySourceRow reliabilitySourceHead" role="row">
-          <span>Источник</span><span>Статус</span><span>Актуальность</span><span>Полный снимок</span><span>Записей</span><span>Последний успех</span><span>Сообщение</span>
-        </div>
-        {filteredSources.map((source) => {
-          const expanded = expandedSources.includes(source.canonical_id);
-          return <React.Fragment key={source.canonical_id}>
-            <button className="reliabilitySourceRow reliabilitySourceButton" role="row" aria-expanded={expanded} onClick={() => setExpandedSources((prev) => expanded ? prev.filter((id) => id !== source.canonical_id) : [...prev, source.canonical_id])}>
-              <span><strong>{source.display_name_ru}</strong><small>{source.canonical_id}</small></span>
-              <span><em className={`statusPill ${source.overall_status}`}>{source.overall_status === "healthy" ? "Стабильный" : source.overall_status === "failed" ? "Ошибка" : source.overall_status === "paused" ? "На паузе" : source.overall_status === "not_checked" ? "Не проверен" : "Частичный"}</em></span>
-              <span>{reliabilityText(source.freshness_status)}</span>
-              <span>{reliabilityText(source.coverage_status)}</span>
-              <span>{reliabilityCount(source.items_seen)}</span>
-              <span>{reliabilityDate(source.last_success_at)}</span>
-              <span className="reliabilitySourceMessage">{source.current_error || (source.retry_overdue ? "Повтор просрочен" : "—")}</span>
-            </button>
-            {expanded && <div className="reliabilitySourceExpanded">
-              <span>Соединение: {reliabilityText(source.circuit_state)}</span>
-              <span>Добавлено: {reliabilityCount(source.last_items_inserted)}</span>
-              <span>Обновлено: {reliabilityCount(source.last_items_updated)}</span>
-              <span>Архивировано: {reliabilityCount(source.last_items_archived)}</span>
-              {source.aliases.length > 1 && <span>Исторические имена: {source.aliases.join(", ")}</span>}
-              {source.last_historical_error && <span>Последняя историческая ошибка: {source.last_historical_error.slice(0, 300)}</span>}
-              {role === "admin" && backgroundJobs && source.registered && <button className="secondaryButton" disabled={Boolean(action)} onClick={() => runAction(`probe:${source.canonical_id}`, () => probeSourceHealth(source.canonical_id))}>Проверить источник</button>}
-            </div>}
-          </React.Fragment>;
-        })}
-      </div>
-    </section>
-
-    <section className="reliabilityBottomGrid">
-      <div className="pageCard">
-        <h2>GEO · координаты</h2>
-        <div className="reliabilityGeoHeadline"><strong>{reliabilityCount(geo?.geocoded)}</strong><span>{geo ? `${geo.percent.toFixed(1)}% покрытия` : "—"}</span></div>
-        <div className="reliabilityProgress"><i style={{ width: `${geo?.percent || 0}%` }} /></div>
-        <dl className="reliabilityStatsList">
-          <div><dt>Требуют обработки</dt><dd>{reliabilityCount(geo?.actionable_remaining)}</dd></div>
-          <div><dt>Соответствие не найдено</dt><dd>{reliabilityCount(geo?.deferred_no_match)}</dd></div>
-          <div><dt>Не прошло проверку</dt><dd>{reliabilityCount(geo?.deferred_validation)}</dd></div>
-          <div><dt>Ожидание сети</dt><dd>{reliabilityCount(geo?.network_wait)}</dd></div>
-        </dl>
-      </div>
-
-      <div className="pageCard">
-        <h2>Полнота и качество данных</h2>
-        <div className="reliabilityQualityHeadline"><span>Актуальных лотов</span><strong>{reliabilityCount(quality?.population)}</strong></div>
-        <dl className="reliabilityStatsList">
-          <div><dt>Нет адреса</dt><dd>{reliabilityCount(quality?.missing_address)} <small>{qualityPercent("missing_address")}</small></dd></div>
-          <div><dt>Нет кадастра</dt><dd>{reliabilityCount(quality?.missing_cadastre)} <small>{qualityPercent("missing_cadastre")}</small></dd></div>
-          <div><dt>Нет цены</dt><dd>{reliabilityCount(quality?.missing_price)} <small>{qualityPercent("missing_price")}</small></dd></div>
-          <div><dt>Неизвестный статус</dt><dd>{reliabilityCount(quality?.unknown_status)} <small>{qualityPercent("unknown_status")}</small></dd></div>
-          <div><dt>Проблемы целостности</dt><dd>{reliabilityCount((integrity?.critical_count || 0) + (integrity?.warning_count || 0))}</dd></div>
-        </dl>
-      </div>
-
-      <div className="pageCard">
-        <h2>Инфраструктура</h2>
-        <dl className="reliabilityInfra">
-          <div><dt>Диск C:</dt><dd className={typeof diskFree === "number" && diskFree < 25 ? "warn" : ""}>{typeof diskFree !== "number" ? <AlertCircle size={16} /> : diskFree < 25 ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}{typeof diskFree === "number" ? `${diskFree.toFixed(1)} ГБ${diskFree < 15 ? " · критично" : diskFree < 25 ? " · мало места" : ""}` : "Нет данных"}</dd></div>
-          <div><dt>Резервная копия</dt><dd className={host?.backup_healthy === false ? "warn" : ""}>{host?.backup_healthy === true ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}{host?.backup_healthy === true ? "Проверена" : host?.backup_healthy === false ? "Требует внимания" : "Нет данных"}{host?.backup_age_hours != null ? ` · ${host.backup_age_hours.toFixed(1)} ч назад` : ""}</dd></div>
-          <div><dt>Диагностика Runner</dt><dd className={host?.runner_healthy === false ? "warn" : ""}>{host?.runner_healthy === true ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}{host?.runner_healthy === true ? "Актуальна" : host?.runner_healthy === false ? "Нет свежей проверки" : "Нет данных"}</dd></div>
-          <div><dt>Карта</dt><dd className={map && !map.ok ? "warn" : ""}>{map?.ok ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}{map ? (map.ok ? "Набор согласован" : "Требует внимания") : "Нет данных"}</dd></div>
-        </dl>
-        <div className="operationsActions reliabilityInfraActions">
-          <button className="secondaryButton" onClick={() => void downloadDiagnostics()}>Скачать диагностику</button>
-          {role === "admin" && backgroundJobs && <>
-            <button className="secondaryButton" disabled={Boolean(action) || geo?.paused === true} onClick={() => runAction("pause", pauseGeocoding)}>Пауза GEO</button>
-            <button className="secondaryButton" disabled={Boolean(action) || geo?.paused !== true} onClick={() => runAction("resume", resumeGeocoding)}>Возобновить GEO</button>
-          </>}
-        </div>
-      </div>
-    </section>
-
-    <section className="pageCard">
-      <div className="reliabilitySectionTitle"><h2>Журнал операций</h2><small>Последние синхронизации и GEO-задачи</small></div>
-      <div className="operationsJournal">{operations?.journal?.map((item, index) => <article key={`${item.kind}-${item.title}-${index}`}><span className={item.status === "completed" || item.status === "success" ? "healthBadge ok" : "healthBadge"}>{reliabilityText(item.status)}</span><div><strong>{item.title}</strong><small>{item.detail}</small>{item.at && <small>{reliabilityDate(item.at)}</small>}</div></article>)}</div>
-      {error && <State error>{error}</State>}
-    </section>
-  </section>;
-}
-
 const nav: Array<[MainView, string, React.ReactNode]> = [["search", "Поиск", <Search />], ["registry", "Реестр", <Bookmark />], ["map", "Карта", <Map />], ["deal", "Сделка", <Calculator />], ["tbankrot", "TBankrot", <ShieldCheck />], ["reliability", "Надёжность", <Activity />]];
 function ServerClock() {
   const [anchor, setAnchor] = React.useState<{ server: number; local: number; synchronized: boolean } | null>(null);
@@ -437,16 +202,16 @@ export function App({ username = "Пользователь", role = "reader", on
   const openDeal = (id: number) => { setSelectedLotId(id); setView("deal"); };
   const openView = (next: MainView) => { setMapFavorites(false); if (next === "map") setMapVisited(true); setView(next); };
   const visibleNav = nav.filter(([id]) => id !== "tbankrot" || role === "admin");
-  return <main className="appShell">
+  return <main className={view === "reliability" ? "appShell appShell--reliability" : "appShell"}>
     <nav className="appRail" aria-label="Основная навигация">
-      <button className="appRailLogo" title="BankrotAI" aria-label="BankrotAI"><Building2 /></button>
-      {visibleNav.map(([id, text, icon]) => <button key={id} title={id === "tbankrot" && tbankrotNeedsAuth ? "TBankrot — требуется авторизация" : text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}{id === "tbankrot" && tbankrotNeedsAuth && <span className="sourceAuthAlert" aria-label="Требуется авторизация" />}</button>)}
-      <button title="Интересные лоты" aria-label={`Интересные лоты: ${favoriteCount}`} className={mapFavorites ? "active favorite" : "favorite"} onClick={() => { setMapVisited(true); setView("map"); setMapFavorites(true); }}><Star />{favoriteCount > 0 && <span>{favoriteCount}</span>}</button>
-      <button title="Обновить данные" aria-label="Обновить данные" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw /></button>
+      <button className="appRailLogo" title="BankrotAI" aria-label="BankrotAI"><Building2 /><span className="appRailText">BankrotAI Web</span></button>
+      {visibleNav.map(([id, text, icon]) => <button key={id} title={id === "tbankrot" && tbankrotNeedsAuth ? "TBankrot — требуется авторизация" : text} aria-label={text} className={view === id && !mapFavorites ? "active" : ""} onClick={() => openView(id)}>{icon}<span className="appRailText">{text}</span>{id === "tbankrot" && tbankrotNeedsAuth && <span className="sourceAuthAlert" aria-label="Требуется авторизация" />}</button>)}
+      <button title="Интересные лоты" aria-label={`Интересные лоты: ${favoriteCount}`} className={mapFavorites ? "active favorite" : "favorite"} onClick={() => { setMapVisited(true); setView("map"); setMapFavorites(true); }}><Star /><span className="appRailText">Избранное</span>{favoriteCount > 0 && <span>{favoriteCount}</span>}</button>
+      <button title="Обновить данные" aria-label="Обновить данные" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw /><span className="appRailText">Обновить</span></button>
       <button className="appRailLogout" title={`Выйти: ${username}`} aria-label={`Выйти: ${username}`} onClick={onLogout}><LogOut /></button>
     </nav>
     <section className="appWorkspace">
-      {view !== "map" && <header className="pageHeader"><div><span className="eyebrow">BankrotAI Web</span><h1>{visibleNav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header>}
+      {view !== "map" && view !== "reliability" && <header className="pageHeader"><div><span className="eyebrow">BankrotAI Web</span><h1>{visibleNav.find(([id]) => id === view)?.[1]}</h1></div><button className="primaryButton" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCcw size={16} />Обновить</button></header>}
       {view !== "map" && <div className="viewContainer">{view === "search" && <SearchView refreshToken={refreshToken} />}{view === "registry" && <RegistryView refreshToken={refreshToken} onOpenDeal={openDeal} />}{view === "deal" && <DealView selectedLotId={selectedLotId} />}{view === "tbankrot" && <TBankrotView refreshToken={refreshToken} />}{view === "reliability" && <ReliabilityView refreshToken={refreshToken} role={role} />}</div>}
       <div className={view === "map" ? "mapPersistentHost active" : "mapPersistentHost"} aria-hidden={view !== "map"} inert={view !== "map" ? true : undefined}>{mapVisited && <MapView refreshToken={refreshToken} favoritesOnly={mapFavorites} active={view === "map"} onFavoriteCount={setFavoriteCount} statusContent={view === "map" ? <ServerClock /> : undefined} />}</div>
       {view !== "map" && <ServerClock />}
