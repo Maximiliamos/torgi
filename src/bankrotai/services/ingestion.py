@@ -35,7 +35,7 @@ from bankrotai.scrapers import (
     LotOnlineClient, TBankrotClient, TorgiGovClient, is_sale_real_estate_lot,
 )
 from bankrotai.services.trusted_time import trusted_utc_now
-from bankrotai.services.detail_freshness import cached_detail_expired, reuse_detail_evidence, refresh_detail_evidence
+from bankrotai.services.detail_freshness import cached_detail_expired, reuse_detail_evidence, refresh_detail_evidence, mutable_raw_evidence
 from bankrotai.services.source_eligibility_evidence import persist_exclusions, clear_exclusion, observe_rejection, partition_sale_lots
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
 from bankrotai.services.mets_identity_aliases import resolve_mets_alias_lots, source_presence_identities
@@ -1133,28 +1133,7 @@ class NationwideIngestionService:
 
     @staticmethod
     def _mutable_raw_evidence(raw: dict[str, Any]) -> tuple[Any, ...]:
-        """Stable evidence for mutable fields that live in heterogeneous source payloads."""
-        keys = (
-            "image_url",
-            "photo_url",
-            "thumbnail_url",
-            "main_image",
-            "image",
-            "photo",
-            "thumbnail",
-            "image_urls",
-            "photo_urls",
-            "images",
-            "photos",
-            "gallery",
-            "listing_fingerprint",
-            "public_offer_schedule",
-            "next_interval_price",
-            "next_price_reduction_at",
-            "minimal_blocks",
-            "dates",
-        )
-        return tuple((key, raw.get(key)) for key in keys if key in raw)
+        return mutable_raw_evidence(raw)
 
     def _result_payload(self, result: SourceSyncResult) -> dict[str, Any]:
         return {
