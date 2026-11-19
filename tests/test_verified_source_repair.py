@@ -328,6 +328,7 @@ def test_isolation_releases_other_legacy_owner_without_deleting_its_group(contex
  ('Автомобиль УАЗ Патриот','car'),
  ('Производственная линия для обработки древесины','equipment'),
  ('Право требования к должнику','receivable'),
+ ('Количество и породный состав древесины: сосна, земельный участок 76:13:031301:92','commodity'),
 ])
 def test_exact_primary_nonproperty_title_can_correct_stale_category_without_claiming_description(context,title,category):
     session,record,source,evidence=context

@@ -25,6 +25,11 @@ from bankrotai.services.map_property_eligibility import map_property_eligible
     ("Комната площадью 12 кв.м.", "Доступ автомобильного транспорта", "real_estate"),
     ("Оборудование", "Хранится в нежилом здании", "equipment"),
     ("Оборудованное нежилое помещение", "", "commercial_room"),
+    ("Количество и породный состав древесины: сосна, 120 куб. м", "Земельный участок 76:13:031301:92", "commodity"),
+    ("Древесина на корню", "Расположена на земельном участке", "commodity"),
+    ("Право заключения договора купли-продажи лесных насаждений", "Лесной участок", "commodity"),
+    ("Земельный участок лесного фонда", "Количество древесины на участке", "land"),
+    ("Здание деревообрабатывающего цеха", "Заготовка древесины", "commercial_building"),
 ])
 def test_primary_asset_is_not_replaced_by_incidental_description(title, description, expected):
     assert classify_category(title, description) == expected
@@ -35,7 +40,11 @@ def test_singular_receivable_cannot_be_published_as_collateral_real_estate():
                                       "description": "Залог — квартира и земельный участок"})
 
 
-@pytest.mark.parametrize("title", ["Грузовой автомобиль МАЗ", "Право требования, залог — квартира"])
+@pytest.mark.parametrize("title", [
+    "Грузовой автомобиль МАЗ", "Право требования, залог — квартира",
+    "Количество и породный состав древесины: сосна, земельный участок 76:13:031301:92",
+    "Лесные насаждения на земельном участке",
+])
 def test_generic_source_property_label_does_not_override_primary_object(title):
     assert not map_property_eligible({"category": "real_estate", "title": title})
 
