@@ -14,11 +14,13 @@ export type ReliabilitySource = SourceHealth & {
   current_error: string | null;
   last_historical_error: string | null;
   retry_overdue: boolean;
+  pilot?: boolean;
 };
 
 export type ReliabilitySourcesResponse = {
   generated_at: string;
   configured_total: number;
+  scheduled_total?: number;
   registered_total: number;
   monitored_total: number;
   paused_total: number;
@@ -26,15 +28,17 @@ export type ReliabilitySourcesResponse = {
   degraded: number;
   failed: number;
   not_checked: number;
+  stale?: number;
+  complete_fresh?: number;
   items: ReliabilitySource[];
 };
 
 export type ReliabilitySummary = {
   schema_version: number;
   generated_at: string;
-  system: { status: "ok" | "degraded" | "incident" | string; reasons: string[]; deployment_sha: string };
+  system: { status: "ok" | "degraded" | "incident" | string; reasons: string[]; generated_at?: string; deployment_sha: string };
   sources: Omit<ReliabilitySourcesResponse, "items">;
-  geo: OperationsProgress["geocoding"];
+  geo: OperationsProgress["geocoding"] & { scope_description_ru?: string };
   map: {
     ok: boolean;
     dataset_version?: string | null;
@@ -54,10 +58,20 @@ export type ReliabilitySummary = {
     processed_without_source: number;
     current_dataset_count: number;
     tile_count_mismatches: number;
+    active_and_archived?: number;
+    date_invariants?: number;
     critical_count: number;
     warning_count: number;
   };
-  host: NonNullable<NonNullable<OperationsProgress["summary"]>["host"]>;
+  host: NonNullable<NonNullable<OperationsProgress["summary"]>["host"]> & {
+    read_only?: boolean;
+    api?: { status: string };
+    database?: { status: string };
+    queue?: { status: string };
+    disk?: { status?: "ok" | "warning" | "critical" | "unknown"; checked_at?: string | null };
+    backup?: { created_at?: string | null; size_bytes?: number | null; restore_verification?: string | null; threshold_hours?: number };
+    runner_diagnostic?: { checked_at?: string | null; status?: string };
+  };
   data_quality: {
     population: number;
     missing_address: number;
