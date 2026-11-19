@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from bankrotai.db import GeoFailure, LotGeoSnapshot, ProcessedLot, SourceLot
 from bankrotai.geo import apply_lot_geo_result, validate_geocoding_result
-from bankrotai.logic import log_action
+from bankrotai.logic import log_action, normalize_status
 from bankrotai.services.geo_backfill import geo_input_hash
 from bankrotai.services.current_nspd_ownership import frozen_ownership_rejection
 from bankrotai.services.geo_feature_precision import address_precision_rejection
@@ -76,7 +76,8 @@ def replay_current_nspd(session, *, receipts, apply=False, expected=None, replac
         if row is None or source is None:
             reason = 'missing_exact_source_binding'
         elif (row.is_archived or row.duplicate_of_id is not None
-              or row.auction_status not in {'active','scheduled'}):
+              or row.auction_status not in {'active','scheduled','paused','unknown'}
+              or source.is_archived or normalize_status(source.source_status or '') == 'closed'):
             reason = 'inactive_projection'
         elif not replace_address_precision and (row.current_geo_lat is not None or row.current_geo_lon is not None):
             reason = 'current_point_already_exists'
@@ -99,6 +100,7 @@ def replay_current_nspd(session, *, receipts, apply=False, expected=None, replac
             original = original_value if isinstance(original_value,dict) else {}
             if not map_property_eligible({'id':row.id,'title':row.title,'description':row.description,
                 'category':row.category,'address':row.address,'cadastral_number':row.cadastral_number,
+                'identity_source_system':row.source_system,'identity_external_id':row.external_id,
                 'auction_type':source.auction_type,'source_transaction':raw.get('typeTransaction'),
                 'official_transaction':original.get('typeTransaction'),
                 'source_sale_eligible':raw.get('source_sale_eligibility')}):
