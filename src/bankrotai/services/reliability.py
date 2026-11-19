@@ -247,7 +247,7 @@ def _current_quality(session: Session) -> dict[str, Any]:
         return int(session.scalar(query) or 0)
 
     total = count()
-    values = {
+    values: dict[str, Any] = {
         "population": total,
         "missing_address": count(ProcessedLot.address.is_(None) | (func.trim(ProcessedLot.address) == "")),
         "missing_cadastre": count(
