@@ -1,10 +1,39 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 test.skip(process.env.E2E_PRODUCTION_AUDIT !== "1",
   "Real production acceptance is only enabled in the dedicated post-deploy workflow.");
 
-async function logIn(page: Page): Promise<void> {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+async function logIn(page: Page, testInfo: TestInfo): Promise<void> {
+  // Preserve pre-login evidence before a test-wide timeout prevents artifacts.
+  // Paths only: query strings, headers, cookies and bodies may contain secrets.
+  const navigation: { event: string; origin: string; path: string; status?: number; error?: string }[] = [];
+  const relevant = (kind: string) => ["document", "script", "stylesheet"].includes(kind);
+  const responseListener = (response: import("@playwright/test").Response) => {
+    if (!relevant(response.request().resourceType())) return;
+    const url = new URL(response.url());
+    navigation.push({ event: "response", origin: url.origin, path: url.pathname, status: response.status() });
+  };
+  const failureListener = (request: import("@playwright/test").Request) => {
+    if (!relevant(request.resourceType())) return;
+    const url = new URL(request.url());
+    navigation.push({ event: "failed", origin: url.origin, path: url.pathname, error: request.failure()?.errorText });
+  };
+  page.on("response", responseListener);
+  page.on("requestfailed", failureListener);
+  try {
+    await page.goto("/", { waitUntil: "domcontentloaded", timeout: 45_000 });
+  } catch (error) {
+    await testInfo.attach("pre-login-navigation.json", {
+      body: Buffer.from(JSON.stringify(navigation, null, 2)), contentType: "application/json",
+    });
+    await testInfo.attach("pre-login-screen.png", {
+      body: await page.screenshot({ timeout: 5_000 }).catch(() => Buffer.alloc(0)), contentType: "image/png",
+    });
+    throw error;
+  } finally {
+    page.off("response", responseListener);
+    page.off("requestfailed", failureListener);
+  }
   const navigate = page.getByRole("button", { name: "Надёжность", exact: true });
   const login = page.getByRole("heading", { name: "Вход", exact: true });
   for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -42,7 +71,7 @@ function percentile95(samples: number[]): number {
 
 test("Reliability data and layout: desktop, tablet and mobile", async ({ page }, testInfo) => {
   test.setTimeout(150_000);
-  await logIn(page);
+  await logIn(page, testInfo);
   await page.getByRole("button", { name: "Надёжность", exact: true }).click();
   const panel = page.locator(".rel-dashboard");
   await expect(panel).toBeVisible({ timeout: 30_000 });
@@ -113,7 +142,7 @@ test("Reliability data and layout: desktop, tablet and mobile", async ({ page },
 
 test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testInfo) => {
   test.setTimeout(120_000);
-  await logIn(page);
+  await logIn(page, testInfo);
   const timings: number[] = [];
   const networkTimes: number[] = [];
   let firstServerMs: number | null = null;
