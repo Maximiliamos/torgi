@@ -19,6 +19,7 @@ class SourceHealthDTO(AppDTO):
     last_complete_success_at: datetime | None = None
     last_failure_at: datetime | None = None
     last_error: str | None = None
+    last_historical_error: str | None = None
     last_error_category: str | None = None
     circuit_state: str = "closed"
     circuit_open_until: datetime | None = None

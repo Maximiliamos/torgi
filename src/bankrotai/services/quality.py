@@ -767,6 +767,10 @@ def list_source_health(
                 last_complete_success_at=latest_complete.finished_at if latest_complete is not None else None,
                 last_failure_at=last_failure_at,
                 last_error=last_error,
+                last_historical_error=(
+                    latest_failure.error_message if latest_failure is not None
+                    else state.last_error if state is not None else None
+                ),
                 last_error_category=(
                     (
                         resilience.get("last_error_category")

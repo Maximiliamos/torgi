@@ -72,6 +72,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [failure, setFailure] = React.useState("");
+  const [staleBlocks, setStaleBlocks] = React.useState<string[]>([]);
   const [action, setAction] = React.useState("");
   const [sourceFilter, setSourceFilter] = React.useState<Filter>("all");
   const [sourceQuery, setSourceQuery] = React.useState("");
@@ -100,7 +101,8 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
       setHistoryChecked(true);
     }
     const failed = results.map((result, i) => result.status === "rejected" ? ["Состояние", "Источники", "Журнал", "Доступность операций", "Историческая база"][i] : null).filter(Boolean);
-    setFailure(failed.length ? "Не удалось обновить: " + failed.join(", ") + ". Последние полученные значения сохранены." : "");
+    setStaleBlocks(failed as string[]);
+    setFailure(failed.length ? "Не удалось обновить: " + failed.join(", ") + ". Последние полученные значения сохранены и помечены устаревшими." : "");
     setLoading(false);
     setRefreshing(false);
   }, []);
@@ -143,6 +145,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
     ...(integrity?.critical_count ? [{ id: "map", name: "Карта и целостность", message: "Обнаружены несоответствия набора карты", severity: "bad", at: map?.published_at || null }] : []),
     ...(map && !map.ok && !integrity?.critical_count ? [{ id: "map-delivery", name: "Доставка карты", message: "Публичная доставка не подтверждена", severity: "warn", at: map.published_at || null }] : []),
     ...(host?.backup_healthy === false ? [{ id: "backup", name: "Резервная копия", message: "Нет подтверждённого успешного восстановления", severity: "bad", at: null }] : []),
+    ...((integrity?.active_and_archived || 0) > 0 || (integrity?.date_invariants || 0) > 0 ? [{ id: "invariants", name: "Целостность БД", message: "Нарушены инварианты статусов или дат", severity: "bad", at: null }] : []),
     ...attention.map(s => ({
       id: s.canonical_id, name: s.display_name_ru, message: s.current_error || (s.retry_overdue ? "Повторная попытка просрочена" : "Полный снимок: " + statusLabel(s.coverage_status) + "; данные: " + statusLabel(s.freshness_status)),
       severity: s.overall_status === "failed" ? "bad" : "warn",
@@ -211,7 +214,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
       <div className="rel-heading"><ShieldCheck size={36} /><div><h1>Надёжность</h1><p>Состояние сбора, обработки и актуальности данных по всем источникам</p></div></div>
       <div className="rel-headerControls">
         <span className="rel-env"><Dot tone="ok" /> Production</span>
-        <span className="rel-updated">Обновлено: <b>{moscow(summary?.generated_at)}</b><small>Автообновление каждые 30 сек</small></span>
+        <span className="rel-updated">Обновлено: <b>{moscow(summary?.generated_at)}</b><small>Автообновление каждые 30 сек</small>{staleBlocks.length > 0 && <small className="rel-textWarn" role="status">Устарели: {staleBlocks.join(", ")}</small>}</span>
         <button className="rel-action" disabled={refreshing} onClick={() => void load()}><RefreshCcw size={16} className={refreshing ? "rel-spin" : ""} />{refreshing ? "Обновляем…" : "Обновить"}</button>
         <button className="rel-action" disabled={!summary} onClick={download}><Download size={16} />Экспорт отчёта</button>
       </div>
@@ -284,7 +287,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
                 <span className="rel-mono">+{n(source.last_items_inserted)} / Δ{n(source.last_items_updated)}</span>
                 <span className="rel-ellipsis" title={message}>{message}</span><ChevronDown className={open ? "rel-flip" : ""} size={17} />
               </button>
-              {open && <div className="rel-rowDetails"><div><b>Последний успех</b><span>{moscow(source.last_success_at)}</span></div><div><b>Полный снимок</b><span>{moscow(source.last_complete_success_at)}</span></div><div><b>Повтор</b><span>{source.retry_overdue ? "Просрочен: " : ""}{moscow(source.next_retry_at)}</span></div><div><b>Соединение</b><span>{statusLabel(source.circuit_state)}</span></div><div><b>Добавлено / обновлено / архивировано</b><span>{n(source.last_items_inserted)} / {n(source.last_items_updated)} / {n(source.last_items_archived)}</span></div><div><b>Исторические имена</b><span>{source.aliases.length ? source.aliases.join(", ") : "Нет"}</span></div>{source.last_historical_error && <p>Историческая ошибка: {source.last_historical_error.slice(0, 300)}</p>}{role === "admin" && backgroundJobs && source.registered && <button className="rel-action" disabled={Boolean(action)} onClick={() => void probe(source)}><RefreshCcw size={14} />Проверить источник</button>}</div>}
+              {open && <div className="rel-rowDetails"><div><b>Последний успех</b><span>{moscow(source.last_success_at)}</span></div><div><b>Полный снимок</b><span>{moscow(source.last_complete_success_at)}</span></div><div><b>Повтор</b><span>{source.retry_overdue ? "Просрочен: " : ""}{moscow(source.next_retry_at)}</span></div><div><b>Соединение</b><span>{statusLabel(source.circuit_state)}</span></div><div><b>Добавлено / обновлено / архивировано</b><span>{n(source.last_items_inserted)} / {n(source.last_items_updated)} / {n(source.last_items_archived)}</span></div><div><b>Исторические имена</b><span>{source.aliases.length ? source.aliases.join(", ") : "Нет"}</span></div>{source.last_historical_error && <p>Историческая ошибка: {source.last_historical_error.slice(0, 300)}</p>}{role === "admin" && backgroundJobs && !host?.read_only && source.registered && <button className="rel-action" disabled={Boolean(action)} onClick={() => void probe(source)}><RefreshCcw size={14} />Проверить источник</button>}</div>}
             </React.Fragment>;
           })}
           {!filteredSources.length && <p className="rel-empty">Источники по заданным условиям не найдены.</p>}
@@ -296,22 +299,24 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
           <h2><MapPin size={19} />GEO · координаты</h2>
           <div className="rel-geoNumbers"><div><strong>{n(geo?.geocoded)}</strong><small>с текущими координатами</small></div><div><strong>{pct(geo?.percent)}</strong><small>покрытие выборки</small></div></div>
           <div className="rel-progress" role="progressbar" aria-label="Покрытие GEO" aria-valuenow={geo?.percent ?? 0} aria-valuemin={0} aria-valuemax={100}><span style={{ width: String(Math.min(100, Math.max(0, geo?.percent || 0))) + "%" }} /></div>
-          <p className="rel-footnote">Объектов в текущей GEO-выборке: {n(geo?.total)}</p>
+          <p className="rel-footnote" title={geo?.scope_description_ru}>Объектов в текущей GEO-выборке: {n(geo?.total)}. {geo?.scope_description_ru}</p>
           <div className="rel-kv"><div><Dot tone="warn" />Требуют обработки <b>{n(geo?.actionable_remaining)}</b></div><div><Dot tone="warn" />Соответствие не найдено <b>{n(geo?.deferred_no_match)}</b></div><div><Dot tone="bad" />Не прошло проверку <b>{n(geo?.deferred_validation)}</b></div><div><Dot tone="neutral" />Ожидание сети <b>{n(geo?.network_wait)}</b></div><div><Dot tone="neutral" />Отложено очередью <b>{n(geo?.p7_held)}</b></div><div><Dot tone="neutral" />Недостаточно данных <b>{n(geo?.deferred_bad_input)}</b></div></div>
         </section>
         <section className="rel-card" id="rel-quality">
           <h2><Database size={19} />Полнота и качество данных</h2>
           <div className="rel-qualityIntro"><span>Актуальных публикаций</span><strong>{n(quality?.population)}</strong></div>
           <div className="rel-kv">{qualityItems.map(([key, label, tone]) => <div key={key}><Dot tone={tone} />{label}<b>{n(qualityCounts[key])} <small>{quality?.percentages?.[key] == null ? "—" : pct(quality.percentages[key])}</small></b></div>)}</div>
-          <details className="rel-history"><summary>Историческая база <ChevronDown size={15} /></summary>{historyChecked && history ? <div className="rel-kv"><div>Всего записей <b>{n(history.total_lots)}</b></div><div>Активные по статусу (история) <b>{n(history.active_lots)}</b></div><div>Архивные <b>{n(history.archived_lots)}</b></div><div>Дубликаты <b>{n(history.duplicate_lots)}</b></div></div> : <p>Историческая проверка недоступна</p>}</details>
+          <details className="rel-history"><summary>Историческая база <ChevronDown size={15} /></summary>{historyChecked && history ? <div className="rel-kv"><div>Всего записей <b>{n(history.total_lots)}</b></div><div>Активные по статусу (история) <b>{n(history.active_lots)}</b></div><div>Архивные <b>{n(history.archived_lots)}</b></div><div>Дубликаты <b>{n(history.duplicate_lots)}</b></div><div>Исторические GEO-снимки <b>{n(history.geocoded_lots)}</b></div></div> : <p>Историческая проверка недоступна</p>}</details>
           <p className="rel-footnote">Проценты рассчитаны только от текущей рабочей выборки. Историческая база не влияет на этот знаменатель.</p>
         </section>
         <section className="rel-card" id="rel-infra">
           <h2><Server size={19} />Инфраструктура</h2>
           <div className="rel-infra">
-            <div><HardDrive size={18} /><span>Свободно на диске</span><b className={host?.disk?.free_gb == null ? "rel-textNeutral" : host.disk.free_gb < 15 ? "rel-textBad" : host.disk.free_gb < 25 ? "rel-textWarn" : "rel-textOk"}>{host?.disk?.free_gb == null ? "Нет данных" : host.disk.free_gb.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ГБ"}<small>Норма от 25 ГБ · критично ниже 15 ГБ</small></b></div>
-            <div><CheckCircle2 size={18} /><span>Резервная копия</span><b className={host?.backup_healthy ? "rel-textOk" : "rel-textWarn"}>{host?.backup_healthy ? "Восстановление проверено" : "Требует проверки"}<small>{host?.backup_age_hours == null ? "Возраст неизвестен" : host.backup_age_hours.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ч назад"}</small></b></div>
-            <div><Clock3 size={18} /><span>Диагностика Runner</span><b className={host?.runner_healthy ? "rel-textOk" : "rel-textWarn"}>{host?.runner_healthy ? "Свежая проверка" : "Нет свежей проверки"}<small>{host?.runner_age_seconds == null ? "Возраст неизвестен" : n(Math.round(host.runner_age_seconds / 60)) + " мин назад"} · не статус процесса</small></b></div>
+            <div><HardDrive size={18} /><span>Свободно на диске</span><b className={host?.disk?.status === "unknown" || host?.disk?.free_gb == null ? "rel-textNeutral" : host.disk.free_gb < 15 ? "rel-textBad" : host.disk.free_gb < 25 ? "rel-textWarn" : "rel-textOk"}>{host?.disk?.free_gb == null ? "Нет данных" : host.disk.free_gb.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ГБ"}<small>Норма от 25 ГБ · критично ниже 15 ГБ</small></b></div>
+            <div><CheckCircle2 size={18} /><span>Резервная копия</span><b className={host?.backup_healthy ? "rel-textOk" : "rel-textWarn"}>{host?.backup_healthy ? "Восстановление проверено" : "Требует проверки"}<small>{host?.backup_age_hours == null ? "Возраст неизвестен" : host.backup_age_hours.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ч назад"} · {host?.backup?.size_bytes == null ? "Размер неизвестен" : n(Math.round(host.backup.size_bytes / 1048576)) + " МБ"}</small></b></div>
+            <div><Clock3 size={18} /><span>Диагностика Runner</span><b className={host?.runner_healthy ? "rel-textOk" : "rel-textWarn"}>{host?.runner_healthy ? "Свежая проверка" : "Нет свежей проверки"}<small>{host?.runner_age_seconds == null ? "Возраст неизвестен" : n(Math.round(host.runner_age_seconds / 60)) + " мин назад"} · проверка: {moscow(host?.runner_diagnostic?.checked_at)} · не статус процесса</small></b></div>
+            <div><Server size={18} /><span>API / база</span><b className={host?.api?.status === "ok" && host?.database?.status === "ok" ? "rel-textOk" : "rel-textWarn"}>{host?.api?.status === "ok" && host?.database?.status === "ok" ? "Доступны" : "Проверка недоступна"}<small>Текущий запрос к базе</small></b></div>
+            <div><Clock3 size={18} /><span>Очередь задач</span><b className="rel-textNeutral">{host?.queue?.status === "disabled" ? "Отключена по конфигурации" : "Не проверена"}<small>{host?.read_only ? "Режим только для чтения" : "Статус процесса не подтверждён"}</small></b></div>
             <div><Layers3 size={18} /><span>Источники</span><b className={failed || degraded ? "rel-textWarn" : "rel-textOk"}>{n(stable)} из {n(configured)} без замечаний<small>Данные планового сбора</small></b></div>
           </div>
           <button className="rel-link" onClick={() => moveTo("rel-map")}>Детальная проверка доставки карты</button>
