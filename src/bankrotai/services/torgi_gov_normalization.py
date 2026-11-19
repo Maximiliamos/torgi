@@ -104,11 +104,13 @@ def parse_torgi_gov_date(value: Any) -> datetime | None:
     return parsed.astimezone(ZoneInfo("Europe/Moscow")).replace(tzinfo=None) if parsed.tzinfo is not None else parsed
 
 
-def normalize_torgi_gov_property_address(address: str, *, cadastral_number: str | None) -> str:
+def normalize_torgi_gov_property_address(address: str | None, *, cadastral_number: str | None) -> str | None:
     """Keep the specific property tail of a duplicated administrative address."""
     from bankrotai.regions import region_code_from_cadastral_number, region_code_from_text
     from bankrotai.services.geo_feature_precision import expected_locality_name, property_number, property_street
 
+    if not address or not cadastral_number:
+        return address
     parts = re.split(r"\bРоссийская\s+Федерация\b", address, maxsplit=1, flags=re.I)
     if not cadastral_number or len(parts) != 2 or not parts[0].strip():
         return address

@@ -48,3 +48,8 @@ def test_official_normalizer_retains_the_raw_address_and_uses_the_cadastral_prop
 ])
 def test_numbered_or_region_conflicting_or_unbound_prefix_is_not_discarded(address, cad):
     assert normalize_torgi_gov_property_address(address, cadastral_number=cad) == address
+
+
+@pytest.mark.parametrize('address', [None, ''])
+def test_absent_address_stays_absent_even_with_a_cadastre(address):
+    assert normalize_torgi_gov_property_address(address, cadastral_number='50:08:0090215:1034') == address
