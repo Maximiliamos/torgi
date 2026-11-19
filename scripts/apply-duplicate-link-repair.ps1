@@ -2,7 +2,7 @@
 param([Parameter(Mandatory)][string]$Selection,
       [Parameter(Mandatory)][string]$Output,
       [Parameter(Mandatory)][string]$ExpectedDeploymentSha,
-      [ValidateSet('duplicate_links','geo_query_policy')][string]$Operation = 'duplicate_links',
+      [ValidateSet('duplicate_links','geo_query_policy','mets_aliases')][string]$Operation = 'duplicate_links',
       [switch]$Apply, [switch]$ValidateTransaction,
       [string]$Plan, [string]$BackupMetadata, [string]$MaintenanceRunId)
 $ErrorActionPreference = 'Stop'

@@ -156,7 +156,7 @@ def _repair_exact_lots(
         if fresh_cadastres and set(fresh_cadastres) != set(record.cadastral_numbers or []):
             changes["cadastral_numbers"] = {"before": record.cadastral_numbers, "after": fresh_cadastres}
         parent = session.get(ProcessedLot, record.duplicate_of_id) if record.duplicate_of_id else None
-        candidate = SimpleNamespace(id=record.id, source_system=record.source_system,
+        candidate = SimpleNamespace(id=record.id, source_system=record.source_system, external_id=record.external_id,
             cadastral_numbers=fresh_cadastres or record.cadastral_numbers,
             **{name: getattr(lot, name) if name in observed else getattr(record, name)
                for name in ("cadastral_number", "lot_url", "source_url")})

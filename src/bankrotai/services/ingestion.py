@@ -38,6 +38,7 @@ from bankrotai.services.trusted_time import trusted_utc_now
 from bankrotai.services.detail_freshness import cached_detail_expired, reuse_detail_evidence, refresh_detail_evidence
 from bankrotai.services.source_eligibility_evidence import persist_exclusions, clear_exclusion, observe_rejection, partition_sale_lots
 from bankrotai.services.batch_persistence import persist_changed_lots_batch
+from bankrotai.services.mets_identity_aliases import source_presence_identities
 from bankrotai.services.ingestion_models import SourceSyncResult, SourceSyncSpec
 from bankrotai.services.ingestion_concurrency import run_bounded_sources, run_serialized_reconciliation
 from bankrotai.services.ingestion_quarantine import enforce_source_quarantine_limit, merge_page_quarantine, partition_normalized_lots
@@ -770,6 +771,8 @@ class NationwideIngestionService:
 
             if self.profile_timings:
                 event.listen(bind, "before_cursor_execute", count_statement)
+            from bankrotai.services.mets_identity_aliases import resolve_mets_alias_lots
+            accepted = resolve_mets_alias_lots(session, accepted)
             if not self.use_gis_batch_persistence:
                 self._persist_page_legacy(session, run_id, result, accepted)
                 commit_started = time.perf_counter()
@@ -798,7 +801,7 @@ class NationwideIngestionService:
             changed_or_new: list[Any] = []
             for normalized in accepted:
                 result.items_seen += 1
-                result.seen_external_ids.add(normalized.external_id)
+                result.seen_external_ids.update(source_presence_identities(normalized))
                 source_row = existing_rows.get(normalized.external_id)
                 existed = source_row is not None
                 # Source equality alone cannot prove its ProcessedLot projection
@@ -834,7 +837,7 @@ class NationwideIngestionService:
     ) -> None:
         for normalized in lots:
             result.items_seen += 1
-            result.seen_external_ids.add(normalized.external_id)
+            result.seen_external_ids.update(source_presence_identities(normalized))
             source_row = session.scalar(
                 select(SourceLot).where(
                     SourceLot.source_system == normalized.source_system,

@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from bankrotai.db import LotNote, LotSyncRun, ProcessedLot, SessionLocal, utc_now
 from bankrotai.services.legacy_duplicate_repair import repair_duplicate_links
 from bankrotai.services.geo_query_policy_repair import repair_current_geo_projections
+from bankrotai.services.mets_alias_repair import repair_mets_alias_links
 
 
 def digest(session):
@@ -26,11 +27,12 @@ def main():
     expected = payload.get("expected")
     apply = bool(payload.get("apply"))
     operation = payload.get("operation", "duplicate_links")
-    if operation not in {"duplicate_links", "geo_query_policy"}:
+    if operation not in {"duplicate_links", "geo_query_policy", "mets_aliases"}:
         raise ValueError("Unknown projection repair operation")
     if expected and expected.get("operation", "duplicate_links") != operation:
         raise ValueError("Preview operation changed")
-    repair = repair_duplicate_links if operation == "duplicate_links" else repair_current_geo_projections
+    repair = {"duplicate_links": repair_duplicate_links, "geo_query_policy": repair_current_geo_projections,
+              "mets_aliases": repair_mets_alias_links}[operation]
     with SessionLocal() as session:
         if apply:
             session.execute(text("SET LOCAL lock_timeout='10s'"))
@@ -54,7 +56,8 @@ def main():
             run = active[0]
             run.heartbeat_at = utc_now()
             run.lease_expires_at = utc_now() + timedelta(minutes=10)
-            counter = "duplicate_links_detached" if operation == "duplicate_links" else "geo_points_reset"
+            counter = {"duplicate_links": "duplicate_links_detached", "geo_query_policy": "geo_points_reset",
+                       "mets_aliases": "mets_alias_links_created"}[operation]
             run.result_json = {**(run.result_json or {}),
                 counter: int((run.result_json or {}).get(counter, 0)) + result["repairable"]}
             session.flush()
