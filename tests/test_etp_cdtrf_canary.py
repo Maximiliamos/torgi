@@ -56,7 +56,12 @@ def test_rejects_unbounded_pages_and_untrusted_lot_ids():
         fetch_verified_cdtrf_lot("390364", "wrong")
 
 
-def test_exact_detail_verified_against_requested_trade_lot(monkeypatch):
+@pytest.mark.parametrize(("status", "expected"), [
+    ("Declare", "scheduled"), ("NotHeld", "failed"), ("Complete", "completed"),
+    ("SignContract", "completed"), ("Cancel", "cancelled"),
+    ("Suspend", None), ("FutureStatus", None),
+])
+def test_exact_detail_verified_against_requested_trade_lot(monkeypatch, status, expected):
     import bankrotai.services.etp_cdtrf_canary as module
     def fake_get(session, url, *, accepts):
         assert url == "https://torgi.cdtrf.ru/trades/390364"
@@ -66,18 +71,22 @@ def test_exact_detail_verified_against_requested_trade_lot(monkeypatch):
             "source": "cdtrf.ru", "trade_id": "390364",
             "trade_lot_id": "390899", "title": "Земельный участок, кадастр 32:10:0010101:42",
             "cadastral_number": "32:10:0010101:42",
-            "initial_price_rub": "675000.00", "source_status_code": "Declare",
+            "initial_price_rub": "675000.00", "source_status_code": status,
             "source_status_text": "Торги объявлены", "region_label": "Брянская область",
             "region_id": 32, "price_periods": [],
         }
     monkeypatch.setattr(module, "_http_get", fake_get)
     monkeypatch.setattr(module, "parse_detail", fake_parse)
+    if expected is None:
+        with pytest.raises(CdtrfCanaryError, match="CDTRF_STATUS_UNRECOGNIZED"):
+            fetch_verified_cdtrf_lot("390364", "390899", session=object())
+        return
     lot = fetch_verified_cdtrf_lot("390364", "390899", session=object())
     assert lot.external_id == "cdtrf:390899"
     assert lot.category == "land"
     assert lot.current_price is None
     assert lot.cadastral_number == "32:10:0010101:42"
-    assert lot.auction_status == "scheduled"
+    assert lot.auction_status == expected
     with pytest.raises(CdtrfCanaryError, match="differs"):
         fetch_verified_cdtrf_lot("390364", "390898", session=object())
     monkeypatch.setattr(

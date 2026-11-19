@@ -131,6 +131,10 @@ def fetch_verified_cdtrf_lot(trade_id: str, lot_id: str,
         "Declare": "scheduled", "RecieveReq": "active",
         "DefinePart": "scheduled", "TradeGo": "active",
         "SummingUp": "closed",  # bidding over; no longer open for purchase
+        "NotHeld": "failed",  # literal official status: Торги не состоялись
+        "Complete": "completed",  # Торги завершены
+        "SignContract": "completed",  # Подписан договор
+        "Cancel": "cancelled",  # Торги отменены
     }.get(status)
     if category not in PROPERTY:
         raise CdtrfCanaryError("CDTRF_CATEGORY_UNVERIFIED")
