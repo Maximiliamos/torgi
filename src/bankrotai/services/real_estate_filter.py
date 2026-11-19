@@ -51,7 +51,7 @@ def is_real_estate_lot(lot: NormalizedLot) -> bool:
     if explicit_nonproperty_category(lot.title or ""):
         return False
     category = (lot.category or "").lower()
-    if category in {"receivable", "receivables", "debt", "claim", "equipment"}:
+    if category in {"receivable", "receivables", "debt", "claim", "equipment", "commodity"}:
         return False
     if category in REAL_ESTATE_CATEGORIES:
         return True

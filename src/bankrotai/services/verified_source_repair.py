@@ -80,7 +80,7 @@ def repair_verified_source_lots(
             negative_primary_title = (
                 "title" in proof_fields
                 and "title" in observed
-                and lot.get("category") in {"car", "equipment", "receivable"}
+                and lot.get("category") in {"car", "equipment", "receivable", "commodity"}
                 and explicit_nonproperty_category(lot.get("title", "")) == lot.get("category")
             )
             if not {"title", "description"} <= proof_fields and not negative_primary_title:
