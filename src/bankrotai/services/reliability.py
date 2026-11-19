@@ -15,8 +15,9 @@ import requests
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from bankrotai import __version__
 from bankrotai.core import get_settings
-from bankrotai.db import AppSetting, ProcessedLot, utc_now
+from bankrotai.db import AppSetting, ProcessedLot, SCHEMA_REVISION, utc_now
 from bankrotai.services.geo_backfill import geocoding_progress
 from bankrotai.services.operations_status import operations_host_status
 from bankrotai.services.quality import (
@@ -418,6 +419,10 @@ def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
         "waiting_for_retry", "percent", "paused", "classified_percent",
     }
     geo = {key: value for key, value in geo_raw.items() if key in safe_geo_fields}
+    geo["population"] = geo.get("total")
+    geo["current_geocoded"] = geo.get("geocoded")
+    geo["actionable"] = geo.get("actionable_remaining")
+    geo["bad_input"] = geo.get("deferred_bad_input")
     geo["scope_description_ru"] = (
         "Текущие основные неархивные лоты с адресом или кадастровым номером. "
         "Показатель требует обработки может включать повторную проверку объектов с координатами."
@@ -534,6 +539,19 @@ def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
 
     dataset = map_report.get("dataset") or {}
     delivery_ok = bool(map_report.get("ok")) and manifest.get("checked") is True and manifest.get("ok") is True
+    dataset_ok = (
+        dataset.get("status") == "ready"
+        and map_report.get("point_count_matches") is True
+        and map_report.get("tile_count_matches") is True
+        and integrity["current_dataset_count"] == 1
+    )
+    delivery_status = (
+        "ok" if delivery_ok
+        else "not_checked" if manifest_unchecked and not critical
+        else "failed" if critical or manifest_problem
+        else "degraded"
+    )
+    current_quality["current_population"] = current_quality.get("population")
     return {
         "schema_version": 1,
         "generated_at": sources["generated_at"],
@@ -542,11 +560,23 @@ def _reliability_summary_uncached(session: Session) -> dict[str, Any]:
             "reasons": reasons[:8],
             "generated_at": sources["generated_at"],
             "deployment_sha": os.environ.get("BANKROTAI_DEPLOY_SHA", ""),
+            "app_version": __version__,
+            "schema_revision": SCHEMA_REVISION,
         },
         "sources": {key: value for key, value in sources.items() if key != "items"},
         "geo": geo,
         "map": {
             "ok": delivery_ok,
+            "delivery_status": delivery_status,
+            "db_ok": integrity["current_dataset_count"] == 1,
+            "dataset_ok": dataset_ok,
+            "s3_manifest_ok": manifest.get("ok") if manifest.get("checked") else None,
+            "public_ok": manifest.get("ok") if manifest.get("checked") else None,
+            "mismatch_counts": {
+                "missing": int(map_report.get("missing_from_dataset_count") or 0),
+                "extra": int(map_report.get("extra_in_dataset_count") or 0),
+                "tile_count": integrity["tile_count_mismatches"],
+            },
             "dataset_version": dataset.get("version"),
             "dataset_status": dataset.get("status"),
             "point_count": dataset.get("declared_point_count"),
