@@ -116,6 +116,12 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
   const integrity = summary?.integrity;
   const host = summary?.host;
   const quality = summary?.data_quality;
+  const qualityCounts: Record<string, number | undefined> = {
+    missing_address: quality?.missing_address, missing_cadastre: quality?.missing_cadastre,
+    missing_price: quality?.missing_price, unknown_status: quality?.unknown_status,
+    missing_region: quality?.missing_region, missing_url: quality?.missing_url,
+    non_positive_price: quality?.non_positive_price,
+  };
   const configured = summary?.sources.configured_total ?? null;
   const stable = summary?.sources.healthy ?? null;
   const degraded = summary?.sources.degraded ?? 0;
@@ -296,7 +302,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
         <section className="rel-card" id="rel-quality">
           <h2><Database size={19} />Полнота и качество данных</h2>
           <div className="rel-qualityIntro"><span>Актуальных публикаций</span><strong>{n(quality?.population)}</strong></div>
-          <div className="rel-kv">{qualityItems.map(([key, label, tone]) => <div key={key}><Dot tone={tone} />{label}<b>{n(quality?.[key as keyof typeof quality] as number | undefined)} <small>{quality?.percentages?.[key] == null ? "—" : pct(quality.percentages[key])}</small></b></div>)}</div>
+          <div className="rel-kv">{qualityItems.map(([key, label, tone]) => <div key={key}><Dot tone={tone} />{label}<b>{n(qualityCounts[key])} <small>{quality?.percentages?.[key] == null ? "—" : pct(quality.percentages[key])}</small></b></div>)}</div>
           <details className="rel-history"><summary>Историческая база <ChevronDown size={15} /></summary>{historyChecked && history ? <div className="rel-kv"><div>Всего записей <b>{n(history.total_lots)}</b></div><div>Активные по статусу (история) <b>{n(history.active_lots)}</b></div><div>Архивные <b>{n(history.archived_lots)}</b></div><div>Дубликаты <b>{n(history.duplicate_lots)}</b></div></div> : <p>Историческая проверка недоступна</p>}</details>
           <p className="rel-footnote">Проценты рассчитаны только от текущей рабочей выборки. Историческая база не влияет на этот знаменатель.</p>
         </section>
@@ -304,7 +310,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
           <h2><Server size={19} />Инфраструктура</h2>
           <div className="rel-infra">
             <div><HardDrive size={18} /><span>Свободно на диске</span><b className={host?.disk?.free_gb == null ? "rel-textNeutral" : host.disk.free_gb < 15 ? "rel-textBad" : host.disk.free_gb < 25 ? "rel-textWarn" : "rel-textOk"}>{host?.disk?.free_gb == null ? "Нет данных" : host.disk.free_gb.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ГБ"}<small>Норма от 25 ГБ · критично ниже 15 ГБ</small></b></div>
-            <div><CheckCircle2 size={18} /><span>Резервная копия</span><b className={host?.backup_healthy ? "rel-textOk" : "rel-textWarn"}>{host?.backup_healthy ? "Восстановление проверено" : "Требует проверки"}<small>{host?.backup_age_hours == null ? "Возраст неизвестен" : pct(null).replace("—", host.backup_age_hours.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ч назад")}</small></b></div>
+            <div><CheckCircle2 size={18} /><span>Резервная копия</span><b className={host?.backup_healthy ? "rel-textOk" : "rel-textWarn"}>{host?.backup_healthy ? "Восстановление проверено" : "Требует проверки"}<small>{host?.backup_age_hours == null ? "Возраст неизвестен" : host.backup_age_hours.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ч назад"}</small></b></div>
             <div><Clock3 size={18} /><span>Диагностика Runner</span><b className={host?.runner_healthy ? "rel-textOk" : "rel-textWarn"}>{host?.runner_healthy ? "Свежая проверка" : "Нет свежей проверки"}<small>{host?.runner_age_seconds == null ? "Возраст неизвестен" : n(Math.round(host.runner_age_seconds / 60)) + " мин назад"} · не статус процесса</small></b></div>
             <div><Layers3 size={18} /><span>Источники</span><b className={failed || degraded ? "rel-textWarn" : "rel-textOk"}>{n(stable)} из {n(configured)} без замечаний<small>Данные планового сбора</small></b></div>
           </div>
