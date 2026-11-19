@@ -86,8 +86,18 @@ test("Reliability data and layout: desktop, tablet and mobile", async ({ page },
       width: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,
       dashboardWidth: Math.round(document.querySelector(".rel-dashboard")!.getBoundingClientRect().width),
+      navigationWidth: Math.round(document.querySelector(".appRail")!.getBoundingClientRect().width),
+      geoTop: document.querySelector("#rel-geo")!.getBoundingClientRect().top,
+      mapTop: document.querySelector("#rel-map")!.getBoundingClientRect().top,
+      sourcesTop: document.querySelector("#rel-sources")!.getBoundingClientRect().top,
     }));
     expect(layout.scrollWidth - layout.width, viewport.label + " must not overflow horizontally").toBeLessThanOrEqual(2);
+    if (viewport.width >= 1024) expect(layout.navigationWidth).toBeGreaterThanOrEqual(180);
+    else {
+      expect(layout.navigationWidth).toBeLessThanOrEqual(70);
+      expect(layout.geoTop).toBeLessThan(layout.sourcesTop);
+      expect(layout.mapTop).toBeLessThan(layout.sourcesTop);
+    }
     expect(layout.dashboardWidth).toBeGreaterThan(200);
     const screenshotPath = testInfo.outputPath("reliability-" + viewport.label + ".png");
     await page.screenshot({ path: screenshotPath, fullPage: true, animations: "disabled" });
@@ -131,6 +141,7 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testI
     firstServerMs,
     warmP50ServerMs: sorted[Math.floor((sorted.length - 1) / 2)],
     warmP95ServerMs: percentile95(timings),
+    overallP95ServerMs: percentile95([firstServerMs!, ...timings]),
     warmMaxServerMs: Math.max(...timings),
     warmP95NetworkMs: percentile95(networkTimes),
     sloThresholdServerMs: 500,
@@ -143,4 +154,5 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ page }, testI
     body: Buffer.from(JSON.stringify(result, null, 2)), contentType: "application/json",
   });
   expect(result.warmP95ServerMs).toBeLessThanOrEqual(500);
+  expect(result.overallP95ServerMs).toBeLessThanOrEqual(500);
 });

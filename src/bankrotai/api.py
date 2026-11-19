@@ -2444,10 +2444,11 @@ def get_data_quality():
 
 @app.get("/api/reliability/summary")
 def get_reliability_summary(response: Response):
-    from bankrotai.services.reliability import reliability_summary
+    from bankrotai.services.reliability import reliability_summary, prepare_reliability_snapshot
 
     started = time.perf_counter()
     with read_session_scope() as session:
+        prepare_reliability_snapshot(session)
         payload = jsonable_encoder(reliability_summary(session))
     duration_ms = (time.perf_counter() - started) * 1000
     # Exposes only handler duration; excludes public network latency and secrets.
