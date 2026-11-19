@@ -10,23 +10,14 @@ import {
 } from "../../lib/api";
 import { fetchReliabilitySources, fetchReliabilitySummary } from "./api";
 import type { ReliabilitySource, ReliabilitySummary } from "./api";
+import { moscowTimestamp, relativeTimestamp, timestampEpoch } from "./format";
 import "./reliability.css";
 
 const ru = new Intl.NumberFormat("ru-RU");
 const n = (value: number | null | undefined): string => typeof value === "number" && Number.isFinite(value) ? ru.format(value) : "—";
 const pct = (value: number | null | undefined): string => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + "%" : "—";
-const moscow = (value: string | null | undefined): string => {
-  if (!value || Number.isNaN(Date.parse(value))) return "Нет данных";
-  return new Date(value).toLocaleString("ru-RU", { timeZone: "Europe/Moscow", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) + " МСК";
-};
-const age = (value: string | null | undefined): string => {
-  if (!value || Number.isNaN(Date.parse(value))) return "Нет проверки";
-  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(value)) / 1000));
-  if (seconds < 60) return seconds + " сек назад";
-  if (seconds < 3600) return Math.floor(seconds / 60) + " мин назад";
-  if (seconds < 86400) return Math.floor(seconds / 3600) + " ч назад";
-  return Math.floor(seconds / 86400) + " дн назад";
-};
+const moscow = moscowTimestamp;
+const age = relativeTimestamp;
 const labels: Record<string, string> = {
   healthy: "Норма", degraded: "Ограничения", failed: "Ошибка", paused: "На паузе",
   not_checked: "Нет проверки", fresh: "Актуально", delayed: "Есть задержка",
@@ -140,7 +131,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
   const systemTitle = health === "ok" ? "Система работает стабильно" : health === "incident" ? "Требуется вмешательство" : health === "degraded" ? "Система работает с ограничениями" : "Нет свежей проверки";
   const attention = sources.filter(sourceNeedsAttention).sort((a, b) =>
     sourceSeverity(a.overall_status) - sourceSeverity(b.overall_status)
-    || Date.parse(a.last_success_at || "1970-01-01") - Date.parse(b.last_success_at || "1970-01-01"));
+    || timestampEpoch(a.last_success_at) - timestampEpoch(b.last_success_at));
   const problems = [
     ...(integrity?.critical_count ? [{ id: "map", name: "Карта и целостность", message: "Обнаружены несоответствия набора карты", severity: "bad", at: map?.published_at || null }] : []),
     ...(map && !map.ok && !integrity?.critical_count ? [{ id: "map-delivery", name: "Доставка карты", message: "Публичная доставка не подтверждена", severity: "warn", at: map.published_at || null }] : []),
@@ -158,7 +149,7 @@ export function ReliabilityView({ refreshToken, role }: { refreshToken: number; 
     if (!["all", "configured"].includes(sourceFilter) && s.overall_status !== sourceFilter) return false;
     return [s.display_name_ru, s.canonical_id, ...s.aliases].join(" ").toLocaleLowerCase("ru-RU").includes(sourceQuery.trim().toLocaleLowerCase("ru-RU"));
   }).sort((a, b) => sortBy === "name" ? a.display_name_ru.localeCompare(b.display_name_ru, "ru")
-    : sortBy === "latest" ? (Date.parse(b.last_attempt_at || "") || 0) - (Date.parse(a.last_attempt_at || "") || 0)
+    : sortBy === "latest" ? timestampEpoch(b.last_attempt_at) - timestampEpoch(a.last_attempt_at)
     : sourceSeverity(a.overall_status) - sourceSeverity(b.overall_status) || a.display_name_ru.localeCompare(b.display_name_ru, "ru"));
   const filterTabs: Array<[Filter, string, number]> = [
     ["all", "Все", sources.length], ["configured", "Настроенные", count],
