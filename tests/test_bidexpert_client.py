@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from bankrotai.bidexpert import BidExpertClient
 from bankrotai.connectors.registry.bidexpert import BidExpertConnector
 from bankrotai.scraper_contracts import BidExpertSearchFilters
@@ -256,3 +258,27 @@ def test_bidexpert_detail_prefers_current_procedure_stage_and_named_dates() -> N
     assert lot.application_deadline.isoformat() == "2026-12-10T23:55:00"
     assert lot.auction_at.isoformat() == "2026-11-09T06:00:00"
 
+
+
+@pytest.mark.parametrize("card_status,stage_title,date,expected", [
+    ("Прием заявок", "Дата проведения торгов:", "19-11-2026, 06:00", "active"),
+    ("Приём заявок", "Дата проведения торгов:", "01-01-2020, 06:00", "active"),
+    ("Прием заявок", "Дата проведения торгов:", "01-01-2099, 06:00", "active"),
+    ("Опубликован", "Дата проведения торгов:", "19-11-2026, 06:00", "unknown"),
+    ("Прием заявок", "Прием заявок завершен", "19-11-2026, 06:00", "unknown"),
+    ("Прием заявок", "Процедура завершена", "19-11-2026, 06:00", "closed"),
+    ("Торги отменены", "Дата проведения торгов:", "19-11-2026, 06:00", "closed"),
+])
+def test_highlighted_date_does_not_hide_explicit_card_status_or_imply_closure(card_status,stage_title,date,expected):
+    html=f"""<html><head><title>Лот №123456</title></head><body>
+    <div class="section-title">Земельный участок</div>
+    <div class="bid-card"><div class="bid-card-content-item">
+    <div class="title">Статус:</div><div class="content">{card_status}</div></div></div>
+    <div class="stages-list"><div class="stage-item current">
+    <div class="title">{stage_title}</div><div class="date">{date}</div></div></div>
+    </body></html>"""
+    parsed=BidExpertClient().parse_detail_html(html,lot_id="123456",endpoint="https://bidexpert.ru/bids/lot/?n=123456")
+    assert parsed.auction_status==expected
+    assert parsed.raw_data["current_stage_evidence"]
+    if expected=="active":
+        assert parsed.raw_data["detail_status_evidence"]==card_status

@@ -252,3 +252,37 @@ def test_address_snapshot_change_invalidates_exact_replacement_preview(context):
     with pytest.raises(ValueError,match='stale'):
         replay_current_nspd(session,receipts=evidence,replace_address_precision=True,apply=True,expected=preview)
     assert lot.current_geo_lat==snapshot.centroid_lat
+
+
+@pytest.mark.parametrize('status', ['active', 'scheduled', 'paused', 'unknown'])
+def test_owned_geometry_does_not_depend_on_or_change_nonterminal_auction_status(context, status):
+    session, lot, source, note, _ = context
+    lot.auction_status = source.source_status = status
+    source.cadastral_number = lot.cadastral_number
+    proof = {'sha256': 'a'*64, 'checked_at_utc': datetime.now(timezone.utc).isoformat(), 'value': lot.cadastral_number}
+    source.raw_data = {'verified_source_fields': {'cadastral_number': proof}}
+    evidence = receipt(lot.id)
+    evidence['owned_source_confirmations'] = [{'lot_id': lot.id, 'source_system': source.source_system,
+        'field': 'cadastral_number', 'value': lot.cadastral_number, 'proof': proof.copy()}]
+    session.commit()
+    preview = replay_current_nspd(session, receipts=[evidence])
+    assert preview['accepted'] == 1
+    replay_current_nspd(session, receipts=[evidence], apply=True, expected=preview)
+    session.commit()
+    assert (lot.current_geo_lat, lot.current_geo_lon) == (57.1, 39.4)
+    assert lot.auction_status == source.source_status == status
+    assert not lot.is_archived and lot.review_status == 'approved' and lot.rating == 78
+    assert note.lot_id == lot.id
+
+
+@pytest.mark.parametrize('source_state', ['closed', 'archived'])
+def test_primary_terminal_state_blocks_geometry_even_if_projection_is_stale(context, source_state):
+    session, lot, source, _, _ = context
+    if source_state == 'closed':
+        source.source_status = 'closed'
+    else:
+        source.is_archived = True
+    session.commit()
+    result = replay_current_nspd(session, receipts=[receipt(lot.id)])
+    assert result['accepted'] == 0 and result['items'][0]['reason'] == 'inactive_projection'
+    assert lot.current_geo_lat is None and lot.auction_status == 'active'
