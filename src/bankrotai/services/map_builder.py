@@ -35,6 +35,7 @@ from bankrotai.services.map_dataset_version import (
 )
 from bankrotai.services.map_publication_integrity import exact_map_input_fingerprint
 from bankrotai.services.map_quality_baseline import region_point_quality_transition_ids
+from bankrotai.services.map_audited_transition import audited_transition_ids
 from bankrotai.services.map_property_eligibility import map_property_eligible, map_property_evidence_columns, map_source_join_condition
 
 MAX_DATASET_ZOOM = 14
@@ -361,8 +362,8 @@ def _encoded_tile(
     return payload, hashlib.sha256(encoded).hexdigest()
 
 
-def _dataset_lot_ids(session: Session, dataset_id: int) -> set[int]:
-    lot_ids: set[int] = set()
+def _dataset_lot_points(session: Session, dataset_id: int) -> dict[int, dict]:
+    points: dict[int, dict] = {}
     for payload in session.scalars(
         select(MapTile.payload_json).where(
             MapTile.dataset_id == dataset_id,
@@ -371,8 +372,17 @@ def _dataset_lot_ids(session: Session, dataset_id: int) -> set[int]:
     ):
         for feature in (payload or {}).get("features", []):
             if feature.get("kind") == "lot" and isinstance(feature.get("id"), int):
-                lot_ids.add(feature["id"])
-    return lot_ids
+                prior = points.get(feature["id"])
+                if prior and (prior.get("_ambiguous_geometry") or
+                        (prior.get("lat"), prior.get("lon")) != (feature.get("lat"), feature.get("lon"))):
+                    points[feature["id"]] = {"id": feature["id"], "_ambiguous_geometry": True}
+                else:
+                    points[feature["id"]] = feature
+    return points
+
+
+def _dataset_lot_ids(session: Session, dataset_id: int) -> set[int]:
+    return set(_dataset_lot_points(session, dataset_id))
 
 
 def _dimension_coverage_failures(
@@ -382,7 +392,8 @@ def _dimension_coverage_failures(
     new_dataset_id: int,
     minimum_ratio: float,
 ) -> list[dict[str, object]]:
-    old_ids = _dataset_lot_ids(session, current_dataset_id)
+    old_points = _dataset_lot_points(session, current_dataset_id)
+    old_ids = set(old_points)
     new_ids = _dataset_lot_ids(session, new_dataset_id)
     if not old_ids:
         return []
@@ -391,6 +402,8 @@ def _dimension_coverage_failures(
     quality_removed_ids = region_point_quality_transition_ids(
         session, previous=previous, candidate=candidate, old_ids=old_ids,
     )
+    quality_removed_ids |= audited_transition_ids(session, previous=previous, candidate=candidate,
+        old_points=old_points, new_ids=new_ids)
     # r7 intentionally removed ended auctions that r6 still displayed.
     # Exclude only those explicitly ended legacy rows from the old baseline;
     # never relax the guard for an active row, another revision or a repeat.
@@ -467,6 +480,8 @@ def _promote_map_dataset(
             # Source rows can change after building but not between this
             # validation and the atomic current-dataset switch.
             session.execute(text("LOCK TABLE processed_lots IN SHARE MODE"))
+            # Owned primary status proofs also participate in the coverage certificate.
+            session.execute(text("LOCK TABLE source_lots IN SHARE MODE"))
             session.execute(text("LOCK TABLE lot_sync_runs IN SHARE MODE"))
             session.execute(text("LOCK TABLE background_task_states IN SHARE MODE"))
         current = session.scalar(select(MapDataset).where(MapDataset.is_current.is_(True)).with_for_update())
@@ -522,10 +537,14 @@ def _promote_map_dataset(
             )
         settings = get_settings()
         minimum_points = 0
+        certified_removed_ids: set[int] = set()
         if current is not None and current.point_count > 0:
+            certified_removed_ids = audited_transition_ids(session, previous=current, candidate=dataset,
+                old_points=_dataset_lot_points(session, current.id),
+                new_ids=_dataset_lot_ids(session, dataset.id))
             minimum_points = max(
                 settings.min_map_points,
-                math.ceil(current.point_count * settings.min_map_coverage_ratio),
+                math.ceil((current.point_count-len(certified_removed_ids)) * settings.min_map_coverage_ratio),
             )
         if current is not None and current.point_count > 0 and dataset.point_count < minimum_points:
             dataset.status = "rejected"
@@ -588,7 +607,8 @@ def _promote_map_dataset(
             dataset.id,
             current_id,
         )
-        return {"status": "published", "current_dataset_id": dataset.id}
+        return {"status": "published", "current_dataset_id": dataset.id,
+                "certified_obsolete_previous_members": len(certified_removed_ids)}
 
 
 def build_map_dataset(session_factory: Callable[[], Session]) -> dict:
