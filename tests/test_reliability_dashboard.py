@@ -374,3 +374,42 @@ def test_paused_configured_source_keeps_denominator(monkeypatch) -> None:
     assert rows[0]["configured"]
     assert rows[0]["paused"]
     assert rows[0]["overall_status"] == "paused"
+
+
+
+def test_bounded_reliability_snapshot_cache(monkeypatch) -> None:
+    import bankrotai.services.reliability as module
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    seen: list[float] = []
+    tick = [10_000.0]
+
+    def uncached(session):
+        seen.append(tick[0])
+        return {"generated_at": str(len(seen)), "system": {"status": "degraded"}}
+
+    monkeypatch.setattr(module, "_summary_cache_enabled", lambda session: True)
+    monkeypatch.setattr(module, "_reliability_summary_uncached", uncached)
+    monkeypatch.setattr(module.time, "monotonic", lambda: tick[0])
+    monkeypatch.setattr(module, "_SUMMARY_CACHE", {"at": 0.0, "snapshot": None})
+    with Session(engine) as session:
+        first = module.reliability_summary(session)
+        first["system"]["status"] = "incident"  # Client mutation must not leak.
+        tick[0] += 30.0
+        second = module.reliability_summary(session)
+        assert second["generated_at"] == "1"
+        assert second["system"]["status"] == "degraded"
+        tick[0] += 16.0
+        third = module.reliability_summary(session)
+        assert third["generated_at"] == "2"
+    assert len(seen) == 2
+
+
+def test_snapshot_cache_not_used_outside_production_postgres(monkeypatch) -> None:
+    import bankrotai.services.reliability as module
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        assert module._summary_cache_enabled(session) is False
