@@ -50,7 +50,7 @@ def is_real_estate_lot(lot: NormalizedLot) -> bool:
 
     from bankrotai.services.individual_lot_identity import unscoped_procedure_identity
 
-    if unscoped_procedure_identity(lot.source_system, lot.external_id):
+    if unscoped_procedure_identity(getattr(lot, "source_system", None), getattr(lot, "external_id", None)):
         return False
     if explicit_nonproperty_category(lot.title or ""):
         return False
