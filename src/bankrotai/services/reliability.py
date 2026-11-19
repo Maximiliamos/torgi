@@ -108,23 +108,78 @@ def _quick_public_manifest(dataset: dict[str, Any] | None) -> dict[str, Any]:
         return {"checked": True, "ok": False, "error": f"{exc.__class__.__name__}: public_manifest_request_failed"}
 
 
+# Public object-store checks are performed in a short-lived background daemon,
+# never inside the interactive /api/reliability/summary request. The page remains
+# explicitly 'not checked' until a result for the current dataset is available.
+_MANIFEST_CACHE_LOCK = threading.Lock()
+_MANIFEST_CACHE: dict[str, Any] = {
+    "at": 0.0, "key": "", "result": None, "running": False,
+}
+
+
+def _refresh_manifest(dataset: dict[str, Any], key: str) -> None:
+    try:
+        result = _quick_public_manifest(dataset)
+    except Exception:
+        result = {"checked": True, "ok": False, "reason": "public_manifest_check_failed"}
+    with _MANIFEST_CACHE_LOCK:
+        if _MANIFEST_CACHE["key"] == key:
+            _MANIFEST_CACHE.update({
+                "at": time.monotonic(), "result": result, "running": False,
+            })
+
+
+def _cached_public_manifest(dataset: dict[str, Any] | None) -> dict[str, Any]:
+    version = str((dataset or {}).get("version") or "")
+    base_url = get_settings().map_object_store_public_base_url or ""
+    if not version or not base_url:
+        return {"checked": False, "ok": None, "reason": "public_manifest_not_configured"}
+    key = f"{base_url.rstrip('/')}/{version}"
+    launch = False
+    with _MANIFEST_CACHE_LOCK:
+        if _MANIFEST_CACHE["key"] != key:
+            _MANIFEST_CACHE.update({"key": key, "at": 0.0, "result": None, "running": False})
+        result = _MANIFEST_CACHE.get("result")
+        if isinstance(result, dict) and time.monotonic() - float(_MANIFEST_CACHE["at"]) < 300:
+            return deepcopy(result)
+        if not _MANIFEST_CACHE["running"]:
+            _MANIFEST_CACHE["running"] = True
+            launch = True
+    if launch:
+        try:
+            threading.Thread(
+                target=_refresh_manifest, args=(dict(dataset or {}), key),
+                daemon=True, name="reliability-public-manifest",
+            ).start()
+        except RuntimeError:
+            with _MANIFEST_CACHE_LOCK:
+                if _MANIFEST_CACHE["key"] == key:
+                    _MANIFEST_CACHE["running"] = False
+    return {"checked": False, "ok": None, "reason": "public_manifest_verification_pending"}
+
+
 def _heavy_quality_bundle(session: Session) -> tuple[dict[str, Any], dict[str, Any]]:
     now = time.monotonic()
     with _HEAVY_CACHE_LOCK:
         age = now - float(_HEAVY_CACHE.get("at") or 0.0)
         operational = _HEAVY_CACHE.get("operational")
         map_report = _HEAVY_CACHE.get("map")
-        if age < _HEAVY_CACHE_TTL_SECONDS and isinstance(operational, dict) and isinstance(map_report, dict):
-            return operational, map_report
-        operational = operational_quality_report(session, stale_days=7, problem_limit=10)
-        map_report = map_delivery_reconciliation_report(
-            session,
-            verify_public_manifest=False,
-            problem_limit=10,
-        )
-        map_report["manifest"] = _quick_public_manifest(map_report.get("dataset"))
-        _HEAVY_CACHE.update({"at": now, "operational": operational, "map": map_report})
-        return operational, map_report
+        if not (
+            age < _HEAVY_CACHE_TTL_SECONDS
+            and isinstance(operational, dict)
+            and isinstance(map_report, dict)
+        ):
+            operational = operational_quality_report(session, stale_days=7, problem_limit=10)
+            map_report = map_delivery_reconciliation_report(
+                session, verify_public_manifest=False, problem_limit=10,
+            )
+            _HEAVY_CACHE.update({"at": now, "operational": operational, "map": map_report})
+    # Return a copy so a completed background check cannot mutate a snapshot
+    # that is already being serialized or used by another concurrent request.
+    return operational, {
+        **map_report,
+        "manifest": _cached_public_manifest(map_report.get("dataset")),
+    }
 
 
 def _canonical_source(value: str) -> str:
