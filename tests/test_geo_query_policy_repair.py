@@ -57,7 +57,8 @@ def test_only_current_coarse_address_points_are_candidates(context, change):
     if change == "source":
         snap.geo_source = "nspd"
     elif change == "query":
-        snap.metadata_json = {"query":"г. Ярославль, улица Победы, дом 20А"}
+        snap.metadata_json = {"query":"г. Ярославль, улица Победы, дом 20А",
+                              "address":"г. Ярославль, ул. Победы, д. 20А"}
     else:
         point.current_geo_observed_at = datetime(2026,11,19)
     session.commit()
@@ -74,6 +75,48 @@ def test_changed_snapshot_invalidates_preview_before_mutation(context):
             expected_states={point.id:preview["items"][0]["expected_state"]},
             expected_selection_sha256=preview["selection_sha256"])
     assert point.current_geo_lat == 57.6360203
+
+
+@pytest.mark.parametrize(('query', 'matched', 'reason'), [
+    ('г. Ярославль, ул. Победы, д. 20А', 'г. Ярославль, ул. Победы, д. 20', 'property_number_mismatch'),
+    ('г. Ярославль, ул. Победы, д. 20А', 'г. Ярославль', 'matched_property_number_missing'),
+    ('г. Ярославль', 'г. Ярославль, ул. Победы, д. 20А', 'property_locator_missing'),
+    ('г. Ярославль, ул. Победы, д. 20А', 'г. Ярославль, ул. Свободы, д. 20А', 'property_street_mismatch'),
+    ('г. Ярославль, ул. Победы, д. 20к1', 'г. Ярославль, ул. Победы, д. 20к2', 'property_number_mismatch'),
+])
+def test_existing_imprecise_address_points_are_reset_with_a_verifiable_audit(context, query, matched, reason):
+    from bankrotai.db import AuditLog
+    from bankrotai.services.reported_lot_repair import _state
+
+    session, point, snap, note = context
+    snap.metadata_json = {'query': query, 'address': matched}
+    session.commit()
+    snapshot_sha = _state(snap, None)
+    preview = repair_current_geo_projections(session, lot_ids=[point.id])
+    assert preview['items'][0]['reason'] == reason and preview['repairable'] == 1
+    repair_current_geo_projections(session, lot_ids=[point.id], apply=True,
+        expected_states={point.id: preview['items'][0]['expected_state']},
+        expected_selection_sha256=preview['selection_sha256'])
+    session.commit()
+    event = session.scalar(select(AuditLog).where(AuditLog.action == 'geo_projection_policy_repair'))
+    assert event.metadata_json['snapshot_state_sha256'] == snapshot_sha == _state(snap, None)
+    assert point.current_geo_lat is None and point.review_status == 'approved' and point.rating == 78
+    assert note.content == 'Preserve this note' and not point.is_archived
+
+
+def test_new_geo_failure_invalidates_preview_and_is_not_silently_removed(context):
+    from bankrotai.db import GeoFailure
+
+    session, point, _, _ = context
+    preview = repair_current_geo_projections(session, lot_ids=[point.id])
+    failure = GeoFailure(lot_id=point.id, error_message='New concurrent diagnostic')
+    session.add(failure)
+    session.flush()
+    with pytest.raises(ValueError, match='stale'):
+        repair_current_geo_projections(session, lot_ids=[point.id], apply=True,
+            expected_states={point.id: preview['items'][0]['expected_state']},
+            expected_selection_sha256=preview['selection_sha256'])
+    assert point.current_geo_lat is not None and failure in session
 
 
 @pytest.mark.parametrize("secondary_matches", [False, True])
