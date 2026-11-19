@@ -1215,6 +1215,10 @@ class TorgiGovClient:
 
         combined_text = " ".join(part for part in (title, description, address or "", region_name or "") if part)
         cadastral_numbers = self._extract_cadastral_numbers(payload, combined_text)
+        from bankrotai.services.torgi_gov_normalization import normalize_torgi_gov_property_address
+        address = normalize_torgi_gov_property_address(
+            address, cadastral_number=cadastral_numbers[0] if len(cadastral_numbers) == 1 else None,
+        )
         address = prefer_evidenced_property_address(
             address or None,
             title=title,

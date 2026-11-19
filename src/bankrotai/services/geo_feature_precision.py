@@ -63,3 +63,33 @@ def address_precision_rejection(query: str | None, matched: str | None) -> str |
     if street and street!=property_street(matched):
         return 'property_street_mismatch'
     return None
+
+
+def expected_locality_name(address: str | None) -> str:
+    if not address:
+        return ""
+    full = list(re.finditer(
+        r"(?:^|[,;]\s*)(?:город|деревня|село|пос[её]лок)\s+([^,;]+)",
+        address, re.IGNORECASE,
+    ))
+    dotted = list(re.finditer(
+        r"(?:^|[,;]\s*)(?:г|д|дер|с|п|пос|пгт)\.\s*(?![а-яё]\.)([А-ЯЁA-Z][^,;]*)",
+        address, re.IGNORECASE,
+    ))
+    # Without a dot, 'с' is also an ordinary preposition in sale conditions.
+    # Require a capitalized place and exclude explicit legal phrases. A nested
+    # village after a city is common in the official administrative prefix.
+    short = list(re.finditer(
+        r"(?=(?:^|[,;]\s*|\s+)(?:г|д|дер|с|п|пос|пгт)(?:\.\s*|\s+)"
+        r"(?![а-яё]\.)(?!одновременным\b|учетом\b|последующим\b|кадастровым\b|обременением\b)"
+        r"((?-i:[А-ЯЁA-Z])[^,;]*))",
+        address, re.IGNORECASE,
+    ))
+    candidates = [*full, *dotted, *short]
+    if not candidates:
+        return ""
+    value = max(candidates, key=lambda item: item.start()).group(1)
+    value = re.split(r"\bРоссийская\s+Федерация\b", value, maxsplit=1, flags=re.I)[0]
+    value = re.split(r"\s+[А-ЯЁа-яё-]+\s+(?:область|обл\.?|край|район|республика)(?=\s|$)", value, maxsplit=1, flags=re.I)[0]
+    value = re.split(r"\s+(?:в\s+районе|по\s+проезду|\d+\s*км\b|км\.)(?:\s|$)", value, maxsplit=1, flags=re.I)[0]
+    return " ".join(value.strip(" .").split()).casefold()
