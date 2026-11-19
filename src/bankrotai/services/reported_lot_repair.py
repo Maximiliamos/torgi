@@ -167,11 +167,10 @@ def _repair_exact_lots(
         policy_raw = dict((source.raw_data or {}) if source is not None else {})
         if observed & {"title", "description", "category", "auction_type"}:
             policy_raw.update(lot.raw_data)
-        policy_lot = replace(lot, raw_data=policy_raw, **{
-            name: getattr(lot, name) if name in observed else (
-                getattr(record, name) if name in PROCESSED_FIELDS else getattr(source, name, None)
-            ) for name in policy_fields
-        })
+        policy_lot = replace(lot, raw_data=policy_raw)
+        for name in policy_fields:
+            if name not in observed:
+                setattr(policy_lot, name, getattr(record, name) if name in PROCESSED_FIELDS else getattr(source, name, None))
         exclude_from_property_map = not is_sale_real_estate_lot(policy_lot)
         effective_status = normalize_status(lot.auction_status if "auction_status" in observed else record.auction_status)
         if effective_status == "closed" and not record.is_archived:
