@@ -413,3 +413,50 @@ def test_snapshot_cache_not_used_outside_production_postgres(monkeypatch) -> Non
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         assert module._summary_cache_enabled(session) is False
+
+
+
+def test_manifest_verification_does_not_block_reliability_handler(monkeypatch) -> None:
+    from threading import Event
+    import time
+
+    import bankrotai.services.reliability as module
+
+    started = Event()
+    release = Event()
+    calls = []
+
+    def slow_check(dataset):
+        calls.append(dataset["version"])
+        started.set()
+        assert release.wait(timeout=5.0)
+        return {"checked": True, "ok": True, "version": dataset["version"]}
+
+    monkeypatch.setattr(
+        module, "get_settings",
+        lambda: SimpleNamespace(map_object_store_public_base_url="https://example.test/map"),
+    )
+    monkeypatch.setattr(module, "_quick_public_manifest", slow_check)
+    monkeypatch.setattr(
+        module, "_MANIFEST_CACHE", {"at": 0.0, "key": "", "result": None, "running": False},
+    )
+    dataset = {"version": "test-safe-v1"}
+    begun = time.monotonic()
+    first = module._cached_public_manifest(dataset)
+    duration = time.monotonic() - begun
+    assert duration < 0.5
+    assert first["checked"] is False
+    assert started.wait(timeout=2.0)
+    assert module._cached_public_manifest(dataset)["checked"] is False
+    assert len(calls) == 1
+    release.set()
+    for _ in range(100):
+        current = module._cached_public_manifest(dataset)
+        if current.get("checked"):
+            break
+        time.sleep(0.01)
+    assert current == {"checked": True, "ok": True, "version": "test-safe-v1"}
+    assert len(calls) == 1
+    # After a dataset revision, old successful manifest evidence is invalid.
+    assert module._cached_public_manifest({"version": "test-safe-v2"})["checked"] is False
+    release.set()
