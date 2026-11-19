@@ -180,9 +180,14 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ request }, te
   });
   expect(login.status()).toBe(200);
   await maskSessionCookies(request);
+  const deployment = await authenticatedGet(request, "/deployment.json");
+  expect(deployment.status()).toBe(200);
+  const expectedSha = (await deployment.json() as { commit: string }).commit;
+  expect(expectedSha).toMatch(/^[a-f0-9]{40}$/);
   const timings: number[] = [];
   const networkTimes: number[] = [];
   let firstServerMs: number | null = null;
+  let firstGeneratedAt: string | null = null;
   for (let i = 0; i < 22; i += 1) {
     const start = performance.now();
     let response: APIResponse;
@@ -197,6 +202,9 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ request }, te
     }
     const networkMs = performance.now() - start;
     expect(response.status()).toBe(200);
+    const snapshot = await response.json() as { system: { deployment_sha: string }; generated_at: string };
+    expect(snapshot.system.deployment_sha).toBe(expectedSha);
+    if (i === 0) firstGeneratedAt = snapshot.generated_at;
     const header = response.headers()["server-timing"] || "";
     const match = header.match(/(?:^|,)\s*reliability;dur=([\d.]+)/);
     expect(match, "Production response must expose backend handler latency").not.toBeNull();
@@ -212,6 +220,8 @@ test("Reliability summary server-side warm p95 <= 500ms", async ({ request }, te
   const sorted = timings.slice().sort((a, b) => a - b);
   const result = {
     sampleCount: timings.length,
+    deploymentSha: expectedSha,
+    firstGeneratedAt,
     firstServerMs,
     warmP50ServerMs: sorted[Math.floor((sorted.length - 1) / 2)],
     warmP95ServerMs: percentile95(timings),

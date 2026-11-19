@@ -43,6 +43,17 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.clearAllMocks(); });
 
 describe("Reliability acceptance gaps", () => {
+  it("shows the dashboard while supplementary journal, capabilities and history are pending", async () => {
+    vi.mocked(fetchOperationsProgress).mockImplementationOnce(() => new Promise(() => {}));
+    vi.mocked(fetchCapabilities).mockImplementationOnce(() => new Promise(() => {}));
+    vi.mocked(fetchQuality).mockImplementationOnce(() => new Promise(() => {}));
+    render(<ReliabilityView refreshToken={0} role="reader" />);
+    expect(await screen.findByRole("heading", { name: /Источники данных/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Обновить" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Экспорт отчёта" })).toBeEnabled();
+    expect(screen.queryByText("Загружаем результаты проверки…")).not.toBeInTheDocument();
+  });
+
   it.each([
     { healthy: 0, degraded: 0, failed: 0, paused_total: 8, not_checked: 0, tone: "rel-textNeutral" },
     { healthy: 0, degraded: 0, failed: 0, paused_total: 0, not_checked: 8, tone: "rel-textNeutral" },

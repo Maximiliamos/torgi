@@ -63,8 +63,9 @@ function useReliabilityModel({ refreshToken, role }: { refreshToken: number; rol
   const [backgroundJobs, setBackgroundJobs] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
-  const [failure, setFailure] = React.useState("");
+  const [actionFailure, setFailure] = React.useState("");
   const [staleBlocks, setStaleBlocks] = React.useState<string[]>([]);
+  const failure = actionFailure || (staleBlocks.length ? "Не удалось обновить: " + staleBlocks.join(", ") + ". Последние полученные значения сохранены и помечены устаревшими." : "");
   const [action, setAction] = React.useState("");
   const [sourceFilter, setSourceFilter] = React.useState<Filter>("all");
   const [sourceQuery, setSourceQuery] = React.useState("");
@@ -78,28 +79,43 @@ function useReliabilityModel({ refreshToken, role }: { refreshToken: number; rol
   const load = React.useCallback(async () => {
     const version = ++requestVersion.current;
     setRefreshing(true);
+    setFailure("");
     const readHistory = historyFetchedAt.current === 0 || Date.now() - historyFetchedAt.current >= 300_000;
-    const results = await Promise.allSettled([
-      fetchReliabilitySummary(), fetchReliabilitySources(), fetchOperationsProgress(), fetchCapabilities(),
-      readHistory ? fetchQuality() : Promise.resolve(null),
-    ]);
-    if (version !== requestVersion.current) return;
-    if (results[0].status === "fulfilled") setSummary(results[0].value);
-    if (results[1].status === "fulfilled") setSources(results[1].value.items);
-    if (results[2].status === "fulfilled") setOperations(results[2].value);
-    if (results[3].status === "fulfilled") setBackgroundJobs(Boolean(results[3].value.background_jobs));
-    if (readHistory) {
-      if (results[4].status === "fulfilled" && results[4].value) {
-        setHistory(results[4].value);
-        historyFetchedAt.current = Date.now();
-      }
-      setHistoryChecked(true);
+    const names = ["Состояние", "Источники", "Журнал", "Доступность операций", "Историческая база"];
+    async function update<T>(request: Promise<T>, label: string, accept: (value: T) => void) {
+      let succeeded = false;
+      try {
+        const value = await request;
+        if (version !== requestVersion.current) return;
+        accept(value);
+        succeeded = true;
+      } catch { /* Preserve the last successful value for this block. */ }
+      if (version !== requestVersion.current) return;
+      setStaleBlocks(previous => names.filter(name => name === label ? !succeeded : previous.includes(name)));
+      if (label === "Историческая база") setHistoryChecked(true);
     }
-    const failed = results.map((result, i) => result.status === "rejected" ? ["Состояние", "Источники", "Журнал", "Доступность операций", "Историческая база"][i] : null).filter(Boolean);
-    setStaleBlocks(failed as string[]);
-    setFailure(failed.length ? "Не удалось обновить: " + failed.join(", ") + ". Последние полученные значения сохранены и помечены устаревшими." : "");
-    setLoading(false);
-    setRefreshing(false);
+    const core = [
+      update(fetchReliabilitySummary(), names[0], setSummary),
+      update(fetchReliabilitySources(), names[1], value => setSources(value.items)),
+    ];
+    // Legacy journal/history endpoints can be slow. They must not hold the
+    // aggregate dashboard, source table or manual refresh button hostage.
+    const additional = [
+      update(fetchOperationsProgress(), names[2], setOperations),
+      update(fetchCapabilities(), names[3], value => setBackgroundJobs(Boolean(value.background_jobs))),
+    ];
+    if (readHistory) {
+      additional.push(update(fetchQuality(), names[4], value => {
+        setHistory(value);
+        historyFetchedAt.current = Date.now();
+      }));
+    }
+    await Promise.all(core);
+    if (version === requestVersion.current) {
+      setLoading(false);
+      setRefreshing(false);
+    }
+    await Promise.all(additional);
   }, []);
 
   React.useEffect(() => {
