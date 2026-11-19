@@ -113,6 +113,9 @@ jobs:
       - name: Run authenticated production map gate
         working-directory: WEB
         run: npx playwright test e2e/production-map-availability.spec.ts --workers=1
+      - name: Verify production Reliability (live data, layout, p95)
+        working-directory: WEB
+        run: npx playwright test e2e/production-reliability.spec.ts --workers=1
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
