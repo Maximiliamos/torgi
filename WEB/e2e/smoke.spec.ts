@@ -297,6 +297,18 @@ test("authenticated list search detail and API failure smoke", async ({
   await expect(page.getByText("Работа со сделкой")).toBeVisible();
   await page.getByRole("button", { name: "Надёжность", exact: true }).click();
   await expect(page.getByRole("heading", { name: /Источники данных/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Общая надёжность источников" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Актуальные проблемы/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /GEO · координаты/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Полнота и качество данных/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Инфраструктура" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Экспорт отчёта" })).toBeVisible();
+  await page.screenshot({ path: "test-results/reliability-desktop-reference.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("heading", { name: "Надёжность" })).toBeVisible();
+  await page.screenshot({ path: "test-results/reliability-mobile-reference.png", fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 720 });
+
   await page.getByRole("button", { name: "Реестр", exact: true }).click();
   await expect(page.locator(".workspace")).toBeVisible();
   await expect(page.locator(".lotToolbar")).toBeVisible();
