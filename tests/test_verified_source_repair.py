@@ -329,6 +329,9 @@ def test_isolation_releases_other_legacy_owner_without_deleting_its_group(contex
  ('Производственная линия для обработки древесины','equipment'),
  ('Право требования к должнику','receivable'),
  ('Количество и породный состав древесины: сосна, земельный участок 76:13:031301:92','commodity'),
+ ('Лот №1 (первичные) Количество и породный состав древесины: осина, 112 куб.м.','commodity'),
+ ('Лот №2 (повторные) Оборудование','equipment'),
+ ('Лот №3. Право требования к должнику','receivable'),
 ])
 def test_exact_primary_nonproperty_title_can_correct_stale_category_without_claiming_description(context,title,category):
     session,record,source,evidence=context
