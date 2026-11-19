@@ -467,4 +467,10 @@ def test_manifest_verification_does_not_block_reliability_handler(monkeypatch) -
     assert len(calls) == 1
     # After a dataset revision, old successful manifest evidence is invalid.
     assert module._cached_public_manifest({"version": "test-safe-v2"})["checked"] is False
-    release.set()
+    for _ in range(100):
+        next_result = module._cached_public_manifest({"version": "test-safe-v2"})
+        if next_result.get("checked"):
+            break
+        time.sleep(0.01)
+    assert next_result["checked"] is True
+    assert len(calls) == 2
