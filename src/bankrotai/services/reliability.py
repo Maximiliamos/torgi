@@ -1,7 +1,7 @@
 """Read-only aggregate model for the Reliability dashboard."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import threading
 import time
@@ -113,6 +113,26 @@ def _canonical_source(value: str) -> str:
     return _SOURCE_ALIASES.get(raw.casefold(), raw.casefold())
 
 
+def _utc_naive(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+
+
+def _retry_overdue(item: Any, now: datetime, *, paused: bool = False) -> bool:
+    """A scheduled retry is overdue only until an actual subsequent attempt."""
+    next_retry = _utc_naive(getattr(item, "next_retry_at", None))
+    if paused or next_retry is None or next_retry >= _utc_naive(now):
+        return False
+    if getattr(item, "status", "") in {"running", "queued"}:
+        return False
+    return not any(
+        (attempt := _utc_naive(getattr(item, field, None))) is not None
+        and attempt >= next_retry
+        for field in ("last_attempt_at", "last_success_at")
+    )
+
+
 def _current_error(item: Any) -> str | None:
     if not item.last_error or not item.last_failure_at:
         return None
@@ -121,12 +141,24 @@ def _current_error(item: Any) -> str | None:
     return item.last_error
 
 
-def _source_status(item: Any, *, paused: bool = False) -> str:
+def _source_status(item: Any, *, paused: bool = False, retry_overdue: bool = False) -> str:
     if paused:
         return "paused"
-    if item.status == "failed" or item.circuit_state in {"open", "half_open"} or _current_error(item):
+    if (
+        item.status == "not_checked"
+        and getattr(item, "last_attempt_at", None) is None
+        and getattr(item, "last_success_at", None) is None
+    ):
+        return "not_checked"
+    if item.status == "failed" or _current_error(item):
         return "failed"
-    if item.status == "partial" or item.freshness_status != "fresh" or item.coverage_status != "fresh":
+    if (
+        item.circuit_state in {"open", "half_open"}
+        or retry_overdue
+        or item.status == "partial"
+        or item.freshness_status != "fresh"
+        or item.coverage_status != "fresh"
+    ):
         return "degraded"
     if item.status in {"healthy", "success"} and item.freshness_status == "fresh":
         return "healthy"
@@ -139,7 +171,7 @@ def reliability_sources(session: Session) -> dict[str, Any]:
     configured = {spec.source_id for spec in default_source_specs()}
     registered = set(connector_registry.source_ids())
     paused = {
-        str(row.key).removeprefix("source_paused:")
+        _canonical_source(str(row.key).removeprefix("source_paused:"))
         for row in session.scalars(
             select(AppSetting).where(AppSetting.key.like("source_paused:%"))
         ).all()
@@ -153,6 +185,7 @@ def reliability_sources(session: Session) -> dict[str, Any]:
         grouped.setdefault(canonical, []).append(item)
         aliases.setdefault(canonical, set()).add(item.source_system)
 
+    generated_at = utc_now()
     all_ids = sorted(set(grouped) | configured | registered | paused)
     rows: list[dict[str, Any]] = []
     for source_id in all_ids:
@@ -164,9 +197,8 @@ def reliability_sources(session: Session) -> dict[str, Any]:
                 key=lambda value: value.last_attempt_at or value.last_success_at or datetime.min,
             )
             current_error = _current_error(item)
-            overall = _source_status(item, paused=source_id in paused)
-            next_retry = item.next_retry_at
-            retry_overdue = bool(next_retry is not None and next_retry < utc_now())
+            retry_overdue = _retry_overdue(item, generated_at, paused=source_id in paused)
+            overall = _source_status(item, paused=source_id in paused, retry_overdue=retry_overdue)
             row = {
                 **item.model_dump(mode="json"),
                 "canonical_id": source_id,
@@ -220,8 +252,9 @@ def reliability_sources(session: Session) -> dict[str, Any]:
     order = {"failed": 0, "degraded": 1, "paused": 2, "not_checked": 3, "healthy": 4}
     rows.sort(key=lambda value: (order.get(str(value["overall_status"]), 9), str(value["display_name_ru"]).casefold()))
     return {
-        "generated_at": utc_now().isoformat(),
+        "generated_at": generated_at.isoformat(),
         "configured_total": len(configured),
+        "scheduled_total": sum(bool(row["scheduled"]) for row in rows),
         "registered_total": len(registered),
         "monitored_total": len(rows),
         "paused_total": sum(bool(row["paused"]) for row in rows if row["configured"]),
@@ -229,6 +262,8 @@ def reliability_sources(session: Session) -> dict[str, Any]:
         "degraded": sum(row["overall_status"] == "degraded" for row in rows if row["configured"]),
         "failed": sum(row["overall_status"] == "failed" for row in rows if row["configured"]),
         "not_checked": sum(row["overall_status"] == "not_checked" for row in rows if row["configured"]),
+        "stale": sum(row.get("freshness_status") == "stale" for row in rows if row["configured"]),
+        "complete_fresh": sum(row.get("coverage_status") == "fresh" for row in rows if row["configured"]),
         "items": rows,
     }
 
@@ -277,8 +312,53 @@ def _current_quality(session: Session) -> dict[str, Any]:
 
 def reliability_summary(session: Session) -> dict[str, Any]:
     sources = reliability_sources(session)
-    geo = geocoding_progress(session)
-    host = operations_host_status(session)
+    geo = dict(geocoding_progress(session))
+    geo["scope_description_ru"] = (
+        "Текущие основные неархивные лоты с адресом или кадастровым номером. "
+        "Показатель требует обработки может включать повторную проверку объектов с координатами."
+    )
+    host_raw = operations_host_status(session)
+    disk_raw = host_raw.get("disk") or {}
+    disk_free = disk_raw.get("free_gb")
+    disk_status = (
+        "unknown" if not isinstance(disk_free, (int, float))
+        else "critical" if disk_free < 15
+        else "warning" if disk_free < 25
+        else "ok"
+    )
+    backup_raw = host_raw.get("backup") or {}
+    runner_raw = host_raw.get("runner") or {}
+    from bankrotai.core import get_settings
+    settings = get_settings()
+    # API / DB readiness is supported by serving this authenticated database-backed request.
+    # The background queue is not probed here; avoid claiming online readiness.
+    host = {
+        "api": {"status": "ok"},
+        "database": {"status": "ok"},
+        "queue": {"status": "disabled" if settings.api_read_only else "not_checked"},
+        "read_only": settings.api_read_only,
+        "disk": {
+            "free_gb": disk_free,
+            "checked_at": disk_raw.get("checked_at"),
+            "status": disk_status,
+            "critical_below_gb": 15,
+            "recommended_gb": 25,
+        },
+        "backup_age_hours": host_raw.get("backup_age_hours"),
+        "backup_healthy": host_raw.get("backup_healthy"),
+        "backup": {
+            "created_at": backup_raw.get("created_at"),
+            "size_bytes": backup_raw.get("size_bytes"),
+            "restore_verification": backup_raw.get("restore_verification"),
+            "threshold_hours": 60,
+        },
+        "runner_age_seconds": host_raw.get("runner_age_seconds"),
+        "runner_healthy": host_raw.get("runner_healthy"),
+        "runner_diagnostic": {
+            "checked_at": runner_raw.get("checked_at"),
+            "status": "fresh" if host_raw.get("runner_healthy") else "stale",
+        },
+    }
     operational, map_report = _heavy_quality_bundle(session)
     current_quality = _current_quality(session)
 
@@ -288,6 +368,11 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         "processed_without_source": int(operational_integrity.get("processed_without_source") or 0),
         "current_dataset_count": int(operational_integrity.get("current_dataset_count") or 0),
         "tile_count_mismatches": int(operational_integrity.get("tile_count_mismatches") or 0),
+        "active_and_archived": int(operational_integrity.get("active_and_archived_source_lots") or 0),
+        "date_invariants": sum(
+            int((operational.get("source_date_quality") or {}).get(key) or 0)
+            for key in ("first_seen_after_last_seen", "application_start_after_deadline", "archived_before_first_seen")
+        ),
     }
     manifest = map_report.get("manifest") or {}
     manifest_problem = manifest.get("checked") is True and manifest.get("ok") is not True
@@ -298,6 +383,8 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         or bool(map_report.get("missing_from_dataset_count"))
         or bool(map_report.get("extra_in_dataset_count"))
         or (map_report.get("dataset") or {}).get("status") != "ready"
+        or integrity["active_and_archived"] > 0
+        or integrity["date_invariants"] > 0
     )
     warning_count = sum(
         value > 0
@@ -310,12 +397,24 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         reasons.append(f'Ошибки у {sources["failed"]} настроенных источников')
     if sources["degraded"]:
         reasons.append(f'{sources["degraded"]} настроенных источников требуют внимания')
+    if sources["paused_total"]:
+        reasons.append(f'{sources["paused_total"]} настроенных источников на паузе')
+    if sources["not_checked"]:
+        reasons.append(f'{sources["not_checked"]} настроенных источников без проверки')
+    if geo.get("paused"):
+        reasons.append("Геокодирование приостановлено")
+    if integrity["source_without_processed"] or integrity["processed_without_source"]:
+        reasons.append("Есть несвязанные записи источников и лотов")
+    if integrity["active_and_archived"] or integrity["date_invariants"]:
+        reasons.append("Нарушены инварианты статусов или дат")
     if host.get("backup_healthy") is False:
         reasons.append("Резервная копия требует внимания")
     if host.get("runner_healthy") is False:
         reasons.append("Диагностика Runner устарела")
     disk_free = (host.get("disk") or {}).get("free_gb")
-    if isinstance(disk_free, (int, float)) and disk_free < 25:
+    if disk_status == "unknown":
+        reasons.append("Нет свежих данных о свободном месте на диске")
+    elif disk_status in {"warning", "critical"}:
         reasons.append("Недостаточно свободного места на диске")
     if critical:
         reasons.append("Нарушена целостность карты или набора данных")
@@ -323,26 +422,22 @@ def reliability_summary(session: Session) -> dict[str, Any]:
         reasons.append("Публичная доставка карты не подтверждена")
     elif manifest_unchecked:
         reasons.append("Публичная доставка карты не проверена")
+    elif not map_report.get("ok"):
+        reasons.append("Публикация карты не прошла сверку")
 
-    incident = critical or host.get("backup_healthy") is False or (
-        isinstance(disk_free, (int, float)) and disk_free < 15
-    )
-    degraded = bool(
-        reasons
-        or sources["failed"]
-        or sources["degraded"]
-        or geo.get("paused")
-    )
+    incident = critical or host.get("backup_healthy") is False or disk_status == "critical"
+    degraded = bool(reasons or sources["failed"] or sources["degraded"] or sources["paused_total"] or sources["not_checked"])
     status = "incident" if incident else "degraded" if degraded else "ok"
 
     dataset = map_report.get("dataset") or {}
     delivery_ok = bool(map_report.get("ok")) and manifest.get("checked") is True and manifest.get("ok") is True
     return {
         "schema_version": 1,
-        "generated_at": utc_now().isoformat(),
+        "generated_at": sources["generated_at"],
         "system": {
             "status": status,
-            "reasons": reasons[:5],
+            "reasons": reasons[:8],
+            "generated_at": sources["generated_at"],
             "deployment_sha": os.environ.get("BANKROTAI_DEPLOY_SHA", ""),
         },
         "sources": {key: value for key, value in sources.items() if key != "items"},
