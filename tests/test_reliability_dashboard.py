@@ -350,3 +350,27 @@ def test_reliability_message_redaction() -> None:
     assert "abc123" not in redacted
     assert "token=[скрыто]" in redacted
     assert _safe_error(None) is None
+
+
+def test_paused_configured_source_keeps_denominator(monkeypatch) -> None:
+    from bankrotai.db import AppSetting
+    from bankrotai.services.reliability import reliability_sources
+
+    monkeypatch.setattr(
+        "bankrotai.services.ingestion.default_source_specs",
+        lambda: [SimpleNamespace(source_id="torgi.gov.ru")],
+    )
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(AppSetting(key="source_paused:ГИС Торги", value="true"))
+        session.commit()
+        result = reliability_sources(session)
+    assert result["configured_total"] == 1
+    assert result["scheduled_total"] == 1
+    assert result["paused_total"] == 1
+    rows = [item for item in result["items"] if item["canonical_id"] == "torgi.gov.ru"]
+    assert len(rows) == 1
+    assert rows[0]["configured"]
+    assert rows[0]["paused"]
+    assert rows[0]["overall_status"] == "paused"
