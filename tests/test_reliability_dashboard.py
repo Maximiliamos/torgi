@@ -286,7 +286,7 @@ def test_summary_critical_dates_and_host_fields_are_safe(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "bankrotai.services.reliability.geocoding_progress",
-        lambda session: {"paused": False, "percent": 90.0, "total": 10, "geocoded": 9},
+        lambda session: {"paused": False, "percent": 90.0, "total": 10, "geocoded": 9, "task": {"secret": "DO_NOT_LEAK"}, "network": {"cookie": "DO_NOT_LEAK"}},
     )
     monkeypatch.setattr(
         "bankrotai.services.reliability.operations_host_status",
