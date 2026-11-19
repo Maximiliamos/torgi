@@ -1,6 +1,7 @@
 """Durable exact-identity exclusions for explicitly user-deleted source cards."""
 import hashlib
 import json
+import re
 
 from sqlalchemy import select
 
@@ -20,7 +21,19 @@ def exclusion_key(source_system: str, external_id: str) -> str:
 
 
 def excluded_ids(session, source_system: str, external_ids) -> set[str]:
-    requested = {exclusion_key(source_system, str(identity)): str(identity) for identity in external_ids}
+    requested: dict[str, str] = {}
+    owners: dict[str, set[str]] = {}
+    for identity in external_ids:
+        identity = str(identity)
+        aliases = {identity}
+        if source_system == "m-ets.ru":
+            native = identity.removeprefix("m-ets.ru:")
+            if re.fullmatch(r"[1-9]\d{3,8}-[1-9]\d{0,4}", native):
+                aliases.update({native, "m-ets.ru:" + native})
+        for alias in aliases:
+            key = exclusion_key(source_system, alias)
+            requested[key] = alias
+            owners.setdefault(key, set()).add(identity)
     result = set()
     keys = list(requested)
     for offset in range(0, len(keys), 500):
@@ -28,7 +41,7 @@ def excluded_ids(session, source_system: str, external_ids) -> set[str]:
             value = json.loads(row.value or "null")
             if not isinstance(value, dict) or (value.get("source_system"), value.get("external_id")) != (source_system, requested[row.key]):
                 raise ValueError("Corrupted exact source exclusion; refuse ingestion")
-            result.add(requested[row.key])
+            result.update(owners[row.key])
     return result
 
 

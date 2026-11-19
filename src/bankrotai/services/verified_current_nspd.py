@@ -14,6 +14,7 @@ from bankrotai.db import GeoFailure, LotGeoSnapshot, ProcessedLot, SourceLot
 from bankrotai.geo import apply_lot_geo_result, validate_geocoding_result
 from bankrotai.logic import log_action
 from bankrotai.services.geo_backfill import geo_input_hash
+from bankrotai.services.current_nspd_ownership import frozen_ownership_rejection
 from bankrotai.services.geo_feature_precision import address_precision_rejection
 from bankrotai.services.map_property_eligibility import map_property_eligible
 from bankrotai.services.nspd_evidence import nspd_result_from_receipt
@@ -81,6 +82,8 @@ def replay_current_nspd(session, *, receipts, apply=False, expected=None, replac
             reason = 'current_point_already_exists'
         elif row.cadastral_number != receipt['cadastral_number']:
             reason = 'current_primary_cadastre_differs'
+        elif frozen_ownership_rejection(row, source, receipt):
+            reason = frozen_ownership_rejection(row, source, receipt)
         elif replace_address_precision and (snapshot is None
                 or snapshot.geo_source not in {'photon','nominatim'}
                 or (snapshot.metadata_json or {}).get('cadastral_number')

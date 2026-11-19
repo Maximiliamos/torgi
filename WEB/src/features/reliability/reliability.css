@@ -102,17 +102,33 @@
 
 /* Navigation changes activate only while the Reliability page is selected. */
 .appRailText{display:none}
-.appShell--reliability{grid-template-columns:188px minmax(0,1fr);background:#f5f8fc}
-.appShell--reliability .appRail{background:linear-gradient(153deg,#07162e 0%,#0c254d 70%,#103e8c 100%);border-right:0;align-items:stretch;gap:7px;padding:16px 8px;color:#e9f0ff}
-.appShell--reliability .appRail button{color:#f1f5ff;width:100%;height:42px;justify-content:flex-start;gap:12px;border-radius:9px;padding:0 11px;font-size:12px;white-space:nowrap}
-.appShell--reliability .appRail button svg{height:19px;width:19px;flex-shrink:0}
-.appShell--reliability .appRail button:hover{color:#fff;background:#244673}
-.appShell--reliability .appRail button.active{background:#2165db;color:#fff;box-shadow:0 4px 12px #08203c77}
-.appShell--reliability .appRail .appRailLogo{background:transparent;font-size:14px;font-weight:760;height:52px;margin-bottom:15px}
-.appShell--reliability .appRail .appRailLogo svg{background:#1f6ae9;border-radius:8px;height:27px;width:27px;padding:4px}
-.appShell--reliability .appRailText{display:inline-block;overflow:hidden;text-overflow:ellipsis}
-.appShell--reliability .appRail .favorite{margin-top:8px}
-.appShell--reliability .appRail .favorite>span:not(.appRailText){right:0;left:auto}
-.appShell--reliability .appWorkspace>.viewContainer{margin:0;width:100%;max-width:none;padding:14px 16px 0}
-.appShell--reliability .appWorkspace>.globalClock{background:transparent;border-top:0}
-@media(max-width:800px){.appShell--reliability{grid-template-columns:56px minmax(0,1fr)}.appShell--reliability .appRail{padding:10px 5px}.appShell--reliability .appRail button{width:44px;justify-content:center;padding:0;gap:0}.appShell--reliability .appRailText{display:none}.appShell--reliability .appWorkspace>.viewContainer{padding:12px 9px 0}}
+.appShell.appShell--reliability{grid-template-columns:188px minmax(0,1fr);background:#f5f8fc}
+.appShell.appShell--reliability .appRail{background:linear-gradient(153deg,#07162e 0%,#0c254d 70%,#103e8c 100%);border-right:0;align-items:stretch;gap:7px;padding:16px 8px;color:#e9f0ff}
+.appShell.appShell--reliability .appRail button{color:#f1f5ff;width:100%;height:42px;justify-content:flex-start;gap:12px;border-radius:9px;padding:0 11px;font-size:12px;white-space:nowrap}
+.appShell.appShell--reliability .appRail button svg{height:19px;width:19px;flex-shrink:0}
+.appShell.appShell--reliability .appRail button:hover{color:#fff;background:#244673}
+.appShell.appShell--reliability .appRail button.active{background:#2165db;color:#fff;box-shadow:0 4px 12px #08203c77}
+.appShell.appShell--reliability .appRail .appRailLogo{background:transparent;font-size:14px;font-weight:760;height:52px;margin-bottom:15px}
+.appShell.appShell--reliability .appRail .appRailLogo svg{background:#1f6ae9;border-radius:8px;height:27px;width:27px;padding:4px}
+.appShell.appShell--reliability .appRailText{display:inline-block;overflow:hidden;text-overflow:ellipsis}
+.appShell.appShell--reliability .appRail .favorite{margin-top:8px}
+.appShell.appShell--reliability .appRail .favorite>span:not(.appRailText){right:0;left:auto}
+.appShell.appShell--reliability .appRail .favorite>.appRailText{position:static;background:transparent;border:0;border-radius:0;color:inherit;font-size:inherit;font-weight:inherit;height:auto;min-width:0;padding:0}
+.appShell.appShell--reliability .appWorkspace>.viewContainer{margin:0;width:100%;max-width:none;padding:14px 16px 0}
+.appShell.appShell--reliability .appWorkspace>.globalClock{background:transparent;border-top:0}
+@media(max-width:800px){.appShell.appShell--reliability{grid-template-columns:56px minmax(0,1fr)}.appShell.appShell--reliability .appRail{padding:10px 5px}.appShell.appShell--reliability .appRail button{width:44px;justify-content:center;padding:0;gap:0}.appShell.appShell--reliability .appRailText{display:none}.appShell.appShell--reliability .appWorkspace>.viewContainer{padding:12px 9px 0}}
+
+.rel-dashboard{max-width:1440px;margin-inline:auto;font-size:13px;gap:16px}
+.rel-statBody strong{font-size:24px}
+.rel-table{font-size:12px}
+.rel-footnote{font-size:12px}
+button.rel-issue{width:100%;border:0;border-bottom:1px solid var(--rel-line);background:transparent;text-align:left;color:inherit;font:inherit;cursor:pointer}
+button.rel-issue:hover{background:#f2f7ff}
+@media(min-width:801px){.appShell.appShell--reliability .appWorkspace>.viewContainer{padding:24px 24px 0}}
+@media(min-width:768px) and (max-width:1199px){.rel-heroStats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:767px){
+  .rel-mainGrid,.rel-bottomGrid{display:contents}
+  .rel-header{order:0}.rel-hero{order:1}#rel-attention{order:2}#rel-geo{order:3}#rel-map{order:4}
+  #rel-source-overview{order:5}#rel-quality{order:6}#rel-infra{order:7}#rel-sources{order:8}
+  #rel-journal{order:9}.rel-footer{order:10}
+}

@@ -35,11 +35,13 @@ export type ReliabilitySourcesResponse = {
 
 export type ReliabilitySummary = {
   schema_version: number;
+  refresh_state?: "fresh" | "refreshing" | "error";
   generated_at: string;
   system: { status: "ok" | "degraded" | "incident" | string; reasons: string[]; generated_at?: string; deployment_sha: string; app_version?: string; schema_revision?: string };
   sources: Omit<ReliabilitySourcesResponse, "items">;
   geo: OperationsProgress["geocoding"] & { scope_description_ru?: string; population?: number; current_geocoded?: number; actionable?: number; bad_input?: number };
   map: {
+    checked_at?: string | null;
     ok: boolean;
     delivery_status?: "ok" | "degraded" | "failed" | "not_checked";
     db_ok?: boolean;
@@ -60,6 +62,9 @@ export type ReliabilitySummary = {
     public_manifest?: { checked?: boolean; ok?: boolean | null; [key: string]: unknown };
   };
   integrity: {
+    checked?: boolean;
+    status?: "checked" | "stale" | "not_checked" | "error";
+    checked_at?: string | null;
     source_without_processed: number;
     processed_without_source: number;
     current_dataset_count: number;

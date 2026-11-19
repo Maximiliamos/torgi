@@ -67,6 +67,36 @@ def test_explicit_current_replay_can_restore_reset_reviewed_lot_without_no_match
     assert replay_current_nspd(session,receipts=evidence)['accepted']==0
 
 
+@pytest.mark.parametrize('change', ['none', 'source_title', 'proof', 'expired', 'other_cadastre', 'duplicate'])
+def test_frozen_owned_title_proof_is_checked_before_using_primary_geometry(context, change):
+    session, lot, source, _, _ = context
+    source.cadastral_number = lot.cadastral_number
+    source.title = 'Земельный участок ' + lot.cadastral_number
+    proof = {'sha256': 'a'*64, 'checked_at_utc': datetime.now(timezone.utc).isoformat(), 'value': source.title}
+    if change == 'expired':
+        proof['checked_at_utc'] = (datetime.now(timezone.utc)-timedelta(days=2)).isoformat()
+    source.raw_data = {'verified_source_fields': {'title': proof}}
+    confirmation = {'lot_id': lot.id, 'source_system': source.source_system,
+                    'field': 'title', 'value': source.title, 'proof': proof.copy()}
+    evidence = receipt(lot.id)
+    evidence['owned_source_confirmations'] = [confirmation]
+    if change == 'source_title':
+        source.title = 'Другая публикация'
+    elif change == 'proof':
+        source.raw_data = {'verified_source_fields': {'title': {**proof, 'sha256': 'b'*64}}}
+    elif change == 'other_cadastre':
+        source.title = 'Земельный участок 76:13:031301:99'
+        proof['value'] = source.title
+        source.raw_data = {'verified_source_fields': {'title': proof}}
+        confirmation.update(value=source.title, proof=proof.copy())
+    elif change == 'duplicate':
+        evidence['owned_source_confirmations'].append(confirmation.copy())
+    session.commit()
+    result = replay_current_nspd(session, receipts=[evidence])
+    assert result['accepted'] == (1 if change == 'none' else 0)
+    assert lot.current_geo_lat is None and not session.dirty
+
+
 @pytest.mark.parametrize('field',['cadastre','review','source'])
 def test_current_inputs_and_user_changes_invalidate_preview(context,field):
     session,lot,source,_,_ = context
