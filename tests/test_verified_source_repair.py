@@ -354,3 +354,11 @@ def test_title_only_evidence_cannot_promote_a_record_into_property_scope(context
     with pytest.raises(ValueError,match='fresh title and description'):
         repair_verified_source_lots(session,evidence=evidence,allowed_lot_ids={record.id})
     assert record.title=='Земельный участок' and not session.dirty
+
+
+def test_invalid_postgres_text_is_rejected_before_any_field_is_changed(context):
+    session, record, source, evidence = context
+    evidence[0]['normalized']['description'] = 'Invalid\x00source text'
+    with pytest.raises(ValueError, match='NUL'):
+        repair_verified_source_lots(session, evidence=evidence, allowed_lot_ids={record.id})
+    assert record.description == source.description == 'Земля' and not session.dirty

@@ -57,6 +57,8 @@ def repair_verified_source_lots(
         if raw.get("repair_evidence_sha256") != proof["sha256"]:
             raise ValueError("Normalized evidence references a different source snapshot")
         observed = set(raw.get("repair_observed_fields", []))
+        if any(isinstance(lot.get(name), str) and "\x00" in lot[name] for name in observed):
+            raise ValueError("Observed source text contains an unsupported NUL character")
         if not observed or not observed <= set(SOURCE_FIELDS):
             raise ValueError("Explicit bounded observed field scope is required")
         if not observed <= set(proof.get("observed_fields", [])) | {"category", "detail_level"}:

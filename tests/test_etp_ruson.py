@@ -21,6 +21,17 @@ from bankrotai.connectors.etp_sources.ruson import (
 FIXTURES = Path(__file__).parent / "fixtures" / "etp" / "ruson"
 
 
+def test_source_nul_in_html_text_does_not_reach_persisted_description():
+    body = (FIXTURES / 'ordinary_active.html').read_text(encoding='utf-8')
+    body = body.replace('</body>', '<p>Дополнительный\x00текст</p></body>')
+    assert '\x00' in body
+    lot = parse_detail_html(body, detail_url='https://rus-on.ru/bankrot/lot_view.php?lot_nid=900001',
+                            external_id='rus-on.ru:900001')
+    assert '\x00' not in lot.description
+    assert 'Дополнительный текст' in lot.description
+    assert lot.start_price == 7_415_000 and lot.external_id == 'rus-on.ru:900001'
+
+
 def _parse(name: str, lot_id: str, *, observed_at_utc: datetime | None = None):
     return parse_detail_html(
         (FIXTURES / name).read_text(encoding="utf-8"),
