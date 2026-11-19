@@ -450,7 +450,7 @@ function OperationProgressCard({
           </div>
           {pausedSources.length > 0 && (
             <small className="mapOperationsPaused">
-              Изолированы от общего обновления: {pausedSources.map((source) => source.source_system).join(", ")}
+              Автообновление временно приостановлено: {pausedSources.map((source) => source.source_system).join(", ")}
             </small>
           )}
         </div>
@@ -1150,6 +1150,9 @@ function LotPreview({
         </div>
         {detailLoading && <MapState>Загрузка полной карточки…</MapState>}
         {detailError && <MapState error>{detailError}</MapState>}
+        {(lot.lat == null || lot.lon == null) && (
+          <MapState>Координаты требуют проверки. Метка из предыдущей версии карты может быть неточной.</MapState>
+        )}
         <details className="mapPublications" open={lot.sources.length > 1}>
           <summary>Объединено публикаций: {lot.sources.length}</summary>
           <div>
@@ -1488,7 +1491,9 @@ export function MapView({
       .catch((err) => {
         if (!cancelled)
           setDetailError(
-            err instanceof Error
+            err instanceof ApiError && err.status === 404
+              ? "Лот больше не доступен. На карте осталась метка предыдущей версии."
+              : err instanceof Error
               ? `Не удалось загрузить полную карточку: ${err.message}`
               : "Не удалось загрузить полную карточку",
           );

@@ -15,8 +15,8 @@ export type MapLot = {
   price_observed_at: string | null;
   next_interval_price: number | null;
   next_price_reduction_at: string | null;
-  lat: number;
-  lon: number;
+  lat: number | null;
+  lon: number | null;
   geometry: GeoJSON.GeoJsonObject | null;
   confidence: string;
   source: string;

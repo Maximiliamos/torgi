@@ -74,7 +74,7 @@ def _display_datetime(value: datetime | None) -> str | None:
 
 def _map_lot_payload(
     lot: ProcessedLot,
-    geo: LotGeoSnapshot,
+    geo: LotGeoSnapshot | None,
     source_rows: list[tuple[ProcessedLot, SourceLot]],
 ) -> dict:
     sources = [source for _processed, source in source_rows]
@@ -151,11 +151,11 @@ def _map_lot_payload(
         if primary and primary.next_interval_price is not None
         else None,
         "next_price_reduction_at": business_datetime_iso(primary.next_price_reduction_at if primary else None),
-        "lat": geo.centroid_lat,
-        "lon": geo.centroid_lon,
-        "geometry": geo.geometry_json,
-        "confidence": geo.geo_confidence,
-        "geo_source": geo.geo_source,
+        "lat": geo.centroid_lat if geo is not None else None,
+        "lon": geo.centroid_lon if geo is not None else None,
+        "geometry": geo.geometry_json if geo is not None else None,
+        "confidence": geo.geo_confidence if geo is not None else "unknown",
+        "geo_source": geo.geo_source if geo is not None else None,
         "source": lot.source_system or lot.source,
         "source_name": " / ".join(dict.fromkeys(item.platform_name or item.source_system for item in sources))
         if sources
@@ -379,7 +379,7 @@ def build_map_lots_response(
 
 def build_map_lot_detail(session: Session, lot_id: int) -> dict | None:
     lot = session.get(ProcessedLot, lot_id)
-    if lot is None or lot.current_geo_lat is None or lot.current_geo_lon is None:
+    if lot is None:
         return None
     latest_geo = session.scalar(
         select(LotGeoSnapshot)
@@ -391,8 +391,8 @@ def build_map_lot_detail(session: Session, lot_id: int) -> dict | None:
         .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
     )
     latest_geo = current_map_geo(lot, latest_geo)
-    if latest_geo is None:
-        return None
+    # Detail remains readable while GEO is invalidated or being rechecked.
+    # Never revive an old snapshot to satisfy a stale published marker.
     source_rows = list(
         session.execute(
             select(ProcessedLot, SourceLot)

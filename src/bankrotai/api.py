@@ -2090,7 +2090,7 @@ def get_map_lot(lot_id: int):
     with read_session_scope() as session:
         value = build_map_lot_detail(session, lot_id)
     if value is None:
-        raise HTTPException(status_code=404, detail="Lot is not available on the map")
+        raise HTTPException(status_code=404, detail="Lot not found")
     return value
 
 
