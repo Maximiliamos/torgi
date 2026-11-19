@@ -282,11 +282,12 @@ def reliability_summary(session: Session) -> dict[str, Any]:
     operational, map_report = _heavy_quality_bundle(session)
     current_quality = _current_quality(session)
 
+    operational_integrity = operational.get("integrity") or {}
     integrity = {
-        "source_without_processed": int(operational.get("source_without_processed") or 0),
-        "processed_without_source": int(operational.get("processed_without_source") or 0),
-        "current_dataset_count": int(operational.get("current_dataset_count") or 0),
-        "tile_count_mismatches": int(operational.get("tile_count_mismatches") or 0),
+        "source_without_processed": int(operational_integrity.get("source_without_processed") or 0),
+        "processed_without_source": int(operational_integrity.get("processed_without_source") or 0),
+        "current_dataset_count": int(operational_integrity.get("current_dataset_count") or 0),
+        "tile_count_mismatches": int(operational_integrity.get("tile_count_mismatches") or 0),
     }
     manifest = map_report.get("manifest") or {}
     manifest_problem = manifest.get("checked") is True and manifest.get("ok") is not True
