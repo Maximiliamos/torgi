@@ -80,9 +80,9 @@ def expected_locality_name(address: str | None) -> str:
     # Require a capitalized place and exclude explicit legal phrases. A nested
     # village after a city is common in the official administrative prefix.
     short = list(re.finditer(
-        r"(?:^|[,;]\s*|\s+)(?:г|д|дер|с|п|пос|пгт)(?:\.\s*|\s+)"
+        r"(?=(?:^|[,;]\s*|\s+)(?:г|д|дер|с|п|пос|пгт)(?:\.\s*|\s+)"
         r"(?![а-яё]\.)(?!одновременным\b|учетом\b|последующим\b|кадастровым\b|обременением\b)"
-        r"((?-i:[А-ЯЁA-Z])[^,;]*)",
+        r"((?-i:[А-ЯЁA-Z])[^,;]*))",
         address, re.IGNORECASE,
     ))
     candidates = [*full, *dotted, *short]
