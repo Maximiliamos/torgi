@@ -36,7 +36,7 @@ _MONEY_FULL_RE = re.compile(
 
 
 def _clean(value: str) -> str:
-    return _SPACE_RE.sub(" ", value.replace("\xa0", " ")).strip()
+    return _SPACE_RE.sub(" ", value.replace("\xa0", " ").replace("\x00", " ")).strip()
 
 
 def _key(value: str) -> str:
