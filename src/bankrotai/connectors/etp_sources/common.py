@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup, Tag
 
+from bankrotai.connectors.etp_sources.asset_classification import classify_etp_category as _category
 from bankrotai.connectors.etp_sources.pagination import get_form_params, has_next_page as _has_next_page, page_url as _page_url
 from bankrotai.connectors.etp_sources.row_isolation import has_multiple_lot_links
 from bankrotai.connectors.base import AuctionConnector, ConnectorHealth, ConnectorPage
@@ -153,22 +154,6 @@ def _table_prices(row: Tag) -> tuple[float | None, float | None]:
         elif re.search(r"текущ\w*\s+цен\w*", title):
             current = parse_number(cell.get_text(" ", strip=True))
     return initial, current
-
-def _category(value: str) -> str:
-    from bankrotai.services.asset_category import explicit_nonproperty_category
-    explicit = explicit_nonproperty_category(value)
-    if explicit:
-        return {"car": "vehicle", "receivable": "receivables"}.get(explicit, explicit)
-    lowered = value.lower()
-    if any(word in lowered for word in ("квартир", "комнат", "жилой дом", "недвижим", "помещен", "здани", "гараж", "сооружен")):
-        return "real_estate"
-    if any(word in lowered for word in ("земельн", "участок", "кадастров")):
-        return "land"
-    if any(word in lowered for word in ("автомоб", "транспорт", "vin", "прицеп", "снегоход")):
-        return "vehicle"
-    if any(word in lowered for word in ("право требован", "дебитор")):
-        return "receivables"
-    return "other"
 
 def _label_value(value: str, label: str, pattern: str) -> str | None:
     match = re.search(label + r"\s*[:№]?\s*(" + pattern + r")", value, re.I)
