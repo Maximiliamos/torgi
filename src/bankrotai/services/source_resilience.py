@@ -539,6 +539,10 @@ def sources_due_for_probe(session: Session, *, now: datetime | None = None) -> l
 
 
 def probe_source_endpoint(source_system: str, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+    if source_system == "sberbank-ast.ru":
+        from bankrotai.services.sberbank_ast_health import probe_sberbank_ast_catalogue
+
+        return probe_sberbank_ast_catalogue(timeout_seconds=timeout_seconds)
     if source_system == "torgi-russia.ru":
         # A simple HEAD check on the former alias (or HTTP 200 interstitial)
         # previously prevented automatic recovery for weeks. Verify actual
