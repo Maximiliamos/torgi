@@ -43,3 +43,12 @@
 {"path":".github/workflows/pr-one-time-s3-orphan-cleanup.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/production-functional.yml","invoked_scripts":[],"upstream_workflow_names":["Deploy Cloudflare edge proxy"],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/public-web-smoke.yml","invoked_scripts":[],"upstream_workflow_names":["Deploy Cloudflare edge proxy"],"manual_gate_on_automatic_event":true}
+{"path":".github/workflows/recover-superseded-release-runs.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/regru-cloudflare-tunnel.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/regru-deploy.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":true}
+{"path":".github/workflows/regru-direct-dns-cutover.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/regru-s3-diagnostics.yml","invoked_scripts":["scripts/plan_reg_s3_orphans.py"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/regru-s3-reference-gc.yml","invoked_scripts":["scripts/plan_reg_s3_orphans.py"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/release.yml","invoked_scripts":["scripts/check-repository-consistency.py"],"upstream_workflow_names":["P11 production acceptance","P1 production data quality"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/reported-source-refresh.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/source-circuit-postdeploy-recovery.yml","invoked_scripts":[],"upstream_workflow_names":["Deploy home secondary origin"],"manual_gate_on_automatic_event":false}
