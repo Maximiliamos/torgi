@@ -10,6 +10,8 @@ from bankrotai.services.map_dataset_version import dataset_pipeline_revision
 from bankrotai.services.individual_lot_identity import unscoped_procedure_identity
 from bankrotai.services.map_confirmed_closures import confirmed_source_closure_ids
 
+GEO_POLICY_AUDITS = ("geo_projection_policy_repair", "published_geo_projection_policy_audit")
+
 
 def audited_transition_ids(session, *, previous, candidate, old_points, new_ids):
     """Discount proven closures and one bounded correction of obsolete geometry/IDs.
@@ -30,7 +32,7 @@ def audited_transition_ids(session, *, previous, candidate, old_points, new_ids)
     missing = set(old_points) - set(new_ids)
     events = list(session.scalars(select(AuditLog).where(
         AuditLog.user_id == "operator", AuditLog.entity_type == "lot",
-        AuditLog.action.in_(("geo_projection_policy_repair", "exact_verified_source_source_repair")),
+        AuditLog.action.in_((*GEO_POLICY_AUDITS, "exact_verified_source_source_repair")),
         AuditLog.created_at > previous.published_at,
         AuditLog.created_at <= candidate.created_at,
     )))
@@ -38,10 +40,10 @@ def audited_transition_ids(session, *, previous, candidate, old_points, new_ids)
     for event in events:
         text_id = str(event.entity_id or "")
         if text_id.isascii() and text_id.isdigit() and int(text_id) in missing:
-            if quality_transition or event.action != "geo_projection_policy_repair":
+            if quality_transition or event.action not in GEO_POLICY_AUDITS:
                 relevant.append((int(text_id), event))
     raw_snapshot_ids = {(event.metadata_json or {}).get("snapshot_id") for _, event in relevant
-                    if event.action == "geo_projection_policy_repair"}
+                    if event.action in GEO_POLICY_AUDITS}
     snapshot_ids = {i for i in raw_snapshot_ids if isinstance(i, int) and not isinstance(i, bool)}
     snapshots = {}
     ids = sorted(snapshot_ids)
@@ -64,6 +66,14 @@ def audited_transition_ids(session, *, previous, candidate, old_points, new_ids)
         if not isinstance(snapshot_id, int) or isinstance(snapshot_id, bool):
             continue
         snapshot = snapshots.get(snapshot_id)
+        # A source refresh can clear a projection before the current-point audit.
+        # A separate audit may certify its published historical point, bound to
+        # this exact dataset and a snapshot that already existed at publication.
+        if event.action == "published_geo_projection_policy_audit" and (
+                data.get("dataset_id") != previous.id
+                or data.get("dataset_version") != previous.version
+                or snapshot is None or snapshot.observed_at > previous.published_at):
+            continue
         if (data.get("source_fact_changes") != 0 or data.get("historical_snapshots_deleted") != 0
                 or snapshot is None or snapshot.lot_id != lot_id
                 or snapshot.geo_source not in {"photon", "nominatim"}

@@ -9,7 +9,7 @@ from bankrotai.services.map_audited_transition import audited_transition_ids
 from bankrotai.services.reported_lot_repair import _state
 
 
-def certificate(invalid=None, terminal=False):
+def certificate(invalid=None, terminal=False, published_audit=False):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as s:
@@ -29,6 +29,16 @@ def certificate(invalid=None, terminal=False):
         event = AuditLog(user_id="operator", entity_type="lot", entity_id=str(p.id),
                          action="geo_projection_policy_repair", created_at=datetime(2026, 11, 19, 9),
                          metadata_json=data)
+        if published_audit:
+            event.action = "published_geo_projection_policy_audit"
+            data.update(dataset_id=previous.id, dataset_version=previous.version)
+            if invalid == "dataset_id":
+                data["dataset_id"] = previous.id + 100
+            elif invalid == "dataset_version":
+                data["dataset_version"] = "another-r11"
+            elif invalid == "post_publication_snapshot":
+                g.observed_at = datetime(2026, 11, 19, 8)
+                data["snapshot_state_sha256"] = _state(g, None)
         if terminal:
             c = CanonicalLot(canonical_key="example:one", title="Land", category="land")
             s.add(c); s.flush()
@@ -81,6 +91,17 @@ def certificate(invalid=None, terminal=False):
 
 def test_only_exact_published_geometry_and_unchanged_snapshot_certify_removal():
     assert certificate() == {1}
+
+
+def test_published_point_audit_can_certify_a_historical_projection():
+    assert certificate(published_audit=True) == {1}
+
+
+@pytest.mark.parametrize("invalid", ["dataset_id", "dataset_version", "post_publication_snapshot",
+    "snapshot_sha", "old_geometry", "missing_geometry", "audit_time", "future_audit", "actor",
+    "revision", "repeat_revision", "retained", "reason"])
+def test_historical_point_audit_keeps_all_dataset_geometry_and_time_guards(invalid):
+    assert certificate(invalid, published_audit=True) == set()
 
 
 @pytest.mark.parametrize("invalid", ["snapshot_sha", "old_geometry", "missing_geometry", "audit_time",
