@@ -28,9 +28,12 @@ async def _probe(connector: Any) -> dict[str, Any]:
 
 
 def probe_sberbank_ast_catalogue(*, timeout_seconds: float = 5.0) -> dict[str, Any]:
+    from bankrotai.connectors.etp_sources.common import HtmlEtpConnector
     from bankrotai.connectors.registry import connector_registry
 
     connector = connector_registry.create("sberbank-ast.ru")
+    if not isinstance(connector, HtmlEtpConnector):
+        raise TypeError("Sberbank health probe requires its HTTP connector")
     connector.timeout = max(5.0, min(20.0, timeout_seconds * 2))
     try:
         return asyncio.run(_probe(connector))
