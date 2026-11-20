@@ -63,7 +63,8 @@ _NATIONWIDE_BUSY_RETRY_SECONDS = 300
 _PARTIAL_SOURCE_RETRY_DELAY_SECONDS = 60
 _DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS = max(
     int(settings.celery_nationwide_soft_time_limit),
-    4 * 60 * 60,
+    # The measured full 19-source sweep exceeds the old four-hour budget.
+    8 * 60 * 60,
 )
 _DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS = max(
     int(settings.celery_nationwide_hard_time_limit),

@@ -756,7 +756,8 @@ class NationwideIngestionService:
             )
         # Detail enrichment can reveal that a catalogue's generic "real_estate"
         # label was wrong. Apply the same contract again before either writer.
-        accepted = partition_sale_lots(result, accepted)
+        from bankrotai.services.detail_freshness import without_failed_etp_details
+        accepted = partition_sale_lots(result, without_failed_etp_details(accepted, result.source_system))
         persist_exclusions(self.session_factory, result.source_system, evidence_lots, run_id)
         for lot in accepted:
             clear_exclusion(lot)

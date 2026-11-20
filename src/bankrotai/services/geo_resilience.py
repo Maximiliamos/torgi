@@ -268,6 +268,12 @@ def provider_allowed(provider: str, *, external: bool) -> bool:
 def provider_recovered_since(provider: str, failed_at: datetime | float | None) -> bool:
     if failed_at is None:
         return False
+    # Attempt traces name a pipeline stage; health probes name its actual
+    # provider. Keep unknown stages blocked rather than inferring recovery.
+    provider = {
+        "nspd_cadastral": "nspd", "nspd_cadastral_alt": "nspd",
+        "ik12_cadastral": "ik12", "ik12_cadastral_alt": "ik12",
+    }.get(provider, provider)
     failed_epoch = (
         failed_at.timestamp()
         if isinstance(failed_at, datetime)

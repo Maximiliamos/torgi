@@ -181,7 +181,7 @@ class ProcessedLot(Base):
 
     # Основные параметры объекта
     object_name: Mapped[str | None] = mapped_column(String(300))  # название объекта (если отличается от title)
-    property_type: Mapped[str | None] = mapped_column(String(50))  # Тип: ТРК, ОСЗ, встроенное помещение
+    property_type: Mapped[str | None] = mapped_column(Text)  # Includes full official property classifier labels.
     total_area_gba: Mapped[float | None] = mapped_column(Float)  # общая площадь здания, м²
     gla: Mapped[float | None] = mapped_column(Float)  # арендопригодная площадь
     land_area: Mapped[float | None] = mapped_column(Float)  # площадь участка
@@ -795,7 +795,7 @@ def _migration_root() -> Path:
 
 
 REPO_ROOT = _migration_root()
-SCHEMA_REVISION = "4ef5a6b7c8d9"
+SCHEMA_REVISION = "5fa6b7c8d9e0"
 _SCHEMA_LOCK = Lock()
 DB_WRITE_LOCK = RLock()
 _SCHEMA_READY = False

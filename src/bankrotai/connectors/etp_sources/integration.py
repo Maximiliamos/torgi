@@ -523,6 +523,7 @@ class UtplConnector(HtmlEtpConnector):
 
 
 class AukcionCenterConnector(HtmlEtpConnector):
+    detail_enrichment_version = 2
     safe_for_reconciliation = False
     capabilities = DETAIL_CAPABILITIES
 

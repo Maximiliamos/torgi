@@ -441,7 +441,8 @@ def _parse_div_catalogue(
             asset_text = _clean(asset_node.get_text(" ", strip=True))
             if not _PROPERTY.search(asset_text):
                 continue
-            title, price = _catalogue_title_and_price(asset_text)
+            from bankrotai.connectors.etp_sources.vertrades_catalogue_fields import catalogue_asset_fields
+            title, price = catalogue_asset_fields(asset_node)
 
             # Require lot identity only after the positive property gate.
             asset_urls: list[tuple[str, str]] = []
@@ -909,6 +910,7 @@ def connector_type(profile: "EtpSourceProfile") -> type["HtmlEtpConnector"]:
     )
 
     class VertradesConnector(HtmlEtpConnector):
+        detail_enrichment_version = 2
         capabilities = frozenset({
             "search", "fetch_lot", "healthcheck", "detail_enrichment",
         })

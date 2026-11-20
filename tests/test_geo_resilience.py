@@ -344,3 +344,17 @@ def test_provider_recovery_requires_success_newer_than_lot_failure(monkeypatch) 
         ),
     )
     assert not geo_resilience.provider_recovered_since("nspd", failed_at)
+
+
+def test_attempt_stage_recovery_uses_its_own_canonical_provider(monkeypatch):
+    failed_at = utc_now()
+    allowed = []
+    monkeypatch.setattr(geo_resilience, "provider_allowed", lambda provider, external: allowed.append((provider, external)) or True)
+    monkeypatch.setattr(geo_resilience, "provider_health", lambda provider: geo_resilience.ProviderHealth(
+        provider=provider, last_success_at=failed_at.timestamp() + 1 if provider in {"nspd", "ik12"} else None))
+    for alias in ("nspd_cadastral", "nspd_cadastral_alt", "ik12_cadastral", "ik12_cadastral_alt"):
+        assert geo_resilience.provider_recovered_since(alias, failed_at)
+    assert allowed == [("nspd", True), ("nspd", True), ("ik12", True), ("ik12", True)]
+    assert not geo_resilience.provider_recovered_since("address_geocoder", failed_at)
+    monkeypatch.setattr(geo_resilience, "provider_allowed", lambda provider, external: False)
+    assert not geo_resilience.provider_recovered_since("nspd_cadastral", failed_at)

@@ -24,6 +24,15 @@ def cached_detail_expired(raw: Mapping[str, Any], max_age_hours: int) -> bool:
     return not timedelta(0) <= age <= timedelta(hours=max_age_hours)
 
 
+def without_failed_etp_details(lots: list[Any], source_system: str) -> list[Any]:
+    """A failed mandatory ETP card cannot refresh facts from its unproven listing."""
+    from bankrotai.services.etp_incremental_specs import ADDITIONAL_ETP_SOURCE_IDS
+    # NISTP already has an independent rejection stage with its own counters.
+    if source_system not in ADDITIONAL_ETP_SOURCE_IDS or source_system == "nistp.ru":
+        return lots
+    return [lot for lot in lots if (lot.raw_data or {}).get("detail_enrichment_status") != "failed"]
+
+
 def reuse_detail_evidence(lot: Any, existing: Any, previous_raw: dict, current_raw: dict) -> None:
     """Merge a shallow refresh without erasing independently observed detail facts."""
     for field in ("address", "cadastral_number", "description", "application_deadline",

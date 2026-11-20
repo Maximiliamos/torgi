@@ -40,6 +40,18 @@ DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_full_official_property_type_survives_postgres_storage(engine):
+    label = "Здания (помещения) жилые, не входящие в жилищный фонд"
+    assert len(label) > 50
+    with Session(engine) as session:
+        row = _lot("long-official-property-classifier", property_type=label)
+        session.add(row)
+        session.flush()
+        session.expire(row)
+        assert row.property_type == label
+        session.rollback()
+
+
 @pytest.fixture(scope="module")
 def engine():
     if not DATABASE_URL:
