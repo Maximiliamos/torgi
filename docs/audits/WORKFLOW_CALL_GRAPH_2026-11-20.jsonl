@@ -52,3 +52,6 @@
 {"path":".github/workflows/release.yml","invoked_scripts":["scripts/check-repository-consistency.py"],"upstream_workflow_names":["P11 production acceptance","P1 production data quality"],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/reported-source-refresh.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/source-circuit-postdeploy-recovery.yml","invoked_scripts":[],"upstream_workflow_names":["Deploy home secondary origin"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/sterdez-domain-preflight.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/torgi-russia-home-readonly-recovery.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/torgi-russia-postdeploy-recovery.yml","invoked_scripts":[],"upstream_workflow_names":["Deploy home secondary origin"],"manual_gate_on_automatic_event":false}
