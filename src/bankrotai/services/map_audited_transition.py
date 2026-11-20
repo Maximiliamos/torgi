@@ -9,6 +9,7 @@ from bankrotai.services.geo_feature_precision import address_precision_rejection
 from bankrotai.services.map_dataset_version import dataset_pipeline_revision
 from bankrotai.services.individual_lot_identity import unscoped_procedure_identity
 from bankrotai.services.map_confirmed_closures import confirmed_source_closure_ids
+from bankrotai.services.geographic_source_identity import geographic_source_identity_condition
 
 GEO_POLICY_AUDITS = ("geo_projection_policy_repair", "published_geo_projection_policy_audit")
 
@@ -122,6 +123,13 @@ def audited_transition_ids(session, *, previous, candidate, old_points, new_ids)
     # individual property. This structural membership change applies once.
     remaining_ids = sorted(missing-accepted) if quality_transition else []
     for start in range(0, len(remaining_ids), 1000):
+        # The same one-time scope correction covers imported TBankrot card
+        # coordinates without a value/SHA bound to their exact SourceLot owner.
+        # This certifies missing lineage, never a claim that the sale has ended.
+        accepted.update(session.scalars(select(ProcessedLot.id).where(
+            ProcessedLot.id.in_(remaining_ids[start:start+1000]),
+            geographic_source_identity_condition().is_not(True),
+        )))
         for lot_id, source_system, external_id in session.execute(select(
             ProcessedLot.id, ProcessedLot.source_system, ProcessedLot.external_id,
         ).where(ProcessedLot.id.in_(remaining_ids[start:start+1000]))):

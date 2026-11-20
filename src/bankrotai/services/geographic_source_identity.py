@@ -69,5 +69,5 @@ def geographic_source_identity_condition():
         SourceLot.source_system == ProcessedLot.source_system,
         SourceLot.external_id == ProcessedLot.external_id,
         or_(proven("cadastral_number"), proven("address")),
-    ).exists()
+    ).correlate(ProcessedLot).exists()
     return and_(unscoped.is_not(True), or_(is_imported.is_not(True), owned))

@@ -9,6 +9,8 @@ from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
 
 def map_property_evidence_columns() -> tuple:
     from bankrotai.db import ProcessedLot, SourceLot
+    from sqlalchemy import or_
+    from bankrotai.services.geographic_source_identity import geographic_source_identity_condition
 
     return (
         ProcessedLot.source_system.label("identity_source_system"),
@@ -18,6 +20,8 @@ def map_property_evidence_columns() -> tuple:
         SourceLot.raw_data["typeTransaction"].as_string().label("source_transaction"),
         SourceLot.raw_data["raw"]["typeTransaction"].as_string().label("official_transaction"),
         SourceLot.raw_data["source_sale_eligibility"].as_boolean().label("source_sale_eligible"),
+        or_(ProcessedLot.current_geo_source == "manual",
+            geographic_source_identity_condition()).is_(True).label("source_geo_identity_available"),
     )
 
 
@@ -30,7 +34,7 @@ def map_source_join_condition():
 
 
 def map_property_eligible(row: Mapping[str, Any]) -> bool:
-    if row.get("source_sale_eligible") is False:
+    if row.get("source_sale_eligible") is False or row.get("source_geo_identity_available") is False:
         return False
     transaction = row.get("official_transaction") or row.get("source_transaction")
     if isinstance(transaction, str) and transaction.startswith("{"):
