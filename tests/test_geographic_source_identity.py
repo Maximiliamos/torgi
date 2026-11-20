@@ -74,3 +74,22 @@ def test_explicit_manual_point_remains_available_for_an_unbound_card():
         values=s.execute(select(*map_property_evidence_columns()).select_from(ProcessedLot).outerjoin(SourceLot,map_source_join_condition())).one()._mapping
         assert map_property_eligible(values)
     engine.dispose()
+
+
+@pytest.mark.parametrize('manual', [False, True])
+def test_unverified_old_card_keeps_its_facts_without_exposing_unbound_coordinates(manual):
+    from datetime import datetime
+    from bankrotai.services.map_view import build_map_lot_detail
+    engine=create_engine('sqlite:///:memory:');Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        p=ProcessedLot(source_system='tbankrot.ru',external_id='tbankrot:123456',title='Apartment',category='apartment',
+            lot_url='https://tbankrot.ru/item?id=123456',current_geo_lat=57.6,current_geo_lon=39.8,
+            current_geo_source='manual' if manual else 'photon',current_geo_observed_at=datetime(2026,11,18),
+            review_status='approved',rating=78)
+        s.add(p);s.commit()
+        payload=build_map_lot_detail(s,p.id)
+        assert payload is not None and payload['title']=='Apartment' and payload['review_status']=='approved'
+        assert payload['lat']==(57.6 if manual else None)
+        assert payload['lon']==(39.8 if manual else None)
+        assert p.current_geo_lat==57.6 and p.review_status=='approved' and p.rating==78
+    engine.dispose()

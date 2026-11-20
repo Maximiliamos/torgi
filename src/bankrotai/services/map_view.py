@@ -391,6 +391,12 @@ def build_map_lot_detail(session: Session, lot_id: int) -> dict | None:
         .order_by(LotGeoSnapshot.observed_at.desc(), LotGeoSnapshot.id.desc())
     )
     latest_geo = current_map_geo(lot, latest_geo)
+    from types import SimpleNamespace
+    from bankrotai.services.geographic_source_identity import geographic_source_identity_available
+    if latest_geo is not None and not geographic_source_identity_available(session, lot, SimpleNamespace(
+            source=latest_geo.geo_source,
+            cadastral_number=(latest_geo.metadata_json or {}).get("cadastral_number"))):
+        latest_geo = None
     # Detail remains readable while GEO is invalidated or being rechecked.
     # Never revive an old snapshot to satisfy a stale published marker.
     source_rows = list(
