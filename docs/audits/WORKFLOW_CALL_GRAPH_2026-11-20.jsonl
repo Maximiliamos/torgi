@@ -34,3 +34,12 @@
 {"path":".github/workflows/p16-read-only-baseline.yml","invoked_scripts":["scripts/p16-readonly-baseline.py","scripts/p13-production-eligibility-impact.py","scripts/p0-cross-source-dedup-impact.py"],"upstream_workflow_names":["Deploy home secondary origin"],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/p2-production-maintenance.yml","invoked_scripts":["scripts/p2-production-maintenance.ps1"],"upstream_workflow_names":["Deploy home secondary origin"],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/p7-geo-fast-drain.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/p9-geo-quality-canary.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/phase3-lite-backup.yml","invoked_scripts":["scripts/backup-home-postgres.ps1","scripts/ensure-docker-for-backup.ps1"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/phase3-lite-full-reconcile.yml","invoked_scripts":["scripts/preflight_live_source_gate.py","scripts/preflight_capacity_guard.py","scripts/s3_capacity_probe.py"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":true}
+{"path":".github/workflows/phase3-lite-health.yml","invoked_scripts":["scripts/phase3-production-health.ps1"],"upstream_workflow_names":["Deploy home secondary origin","Phase 3 Lite full source reconciliation"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/postfix-seven-source-verification.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/pr-home-map-retention-diagnostics.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/pr-one-time-s3-orphan-cleanup.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/production-functional.yml","invoked_scripts":[],"upstream_workflow_names":["Deploy Cloudflare edge proxy"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/public-web-smoke.yml","invoked_scripts":[],"upstream_workflow_names":["Deploy Cloudflare edge proxy"],"manual_gate_on_automatic_event":true}
