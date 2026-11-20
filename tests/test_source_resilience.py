@@ -22,6 +22,13 @@ from bankrotai.services.source_resilience import (
 )
 
 
+def test_every_scheduled_etp_has_a_trusted_recovery_probe_endpoint():
+    from bankrotai.services.scheduled_ingestion_modes import SCHEDULED_SOURCE_IDS
+    from bankrotai.services.source_resilience import _SOURCE_PROBE_URLS
+    assert SCHEDULED_SOURCE_IDS <= set(_SOURCE_PROBE_URLS)
+    assert all(_SOURCE_PROBE_URLS[source].startswith('https://') for source in SCHEDULED_SOURCE_IDS)
+
+
 def _sessions():
     engine = create_engine(
         "sqlite:///:memory:",

@@ -42,7 +42,7 @@ _RUBLE_RE = r"(?:(?:российск\w*\s+)?рубл\w*\s*\(RUB\)|₽|руб(?:\
 
 _STATUS_RE = re.compile(
     r"лот\s*№\s*\d+\s*\.?.{0,1200}?\s+-\s+"
-    r"(при[её]м\s+заявок|закончено(?:\s*\([^)]*\))*|"
+    r"(ожидается\s+начало\s+при[её]ма\s+заявок|при[её]м\s+заявок(?:\s+(?:заверш[её]н|окончен))?|закончено(?:\s*\([^)]*\))*|"
     r"отказ\s+организатора(?:\s*\([^)]*\))*|"
     r"приостановлено|рассмотрение\s+заявок(?:\s+и\s+подведение\s+итогов)?)",
     re.I,
@@ -61,6 +61,7 @@ class FabrikantDetailFields:
     address: str | None
     cadastral_number: str | None
     area: float | None
+    application_start_at: datetime | None
     application_deadline: datetime | None
     auction_at: datetime | None
 
@@ -92,7 +93,9 @@ def _safe_public_url(base_url: str, href: str) -> str | None:
         or parsed.port not in {None, 443}
     ):
         return None
-    return url
+    # The public catalogue emits apex-host links; the provider redirects them
+    # to www. Canonicalize only this already validated host, retaining identity.
+    return urlunparse(parsed._replace(netloc="www.fabrikant.ru"))
 
 
 
@@ -221,6 +224,15 @@ def parse_catalogue_page(
         ):
             next_url = url
 
+    from bankrotai.connectors.etp_sources.fabrikant_pagination import modern_search_pagination
+    try:
+        modern = modern_search_pagination(soup, page=page)
+    except ValueError as exc:
+        raise FabrikantContractError(str(exc)) from exc
+    if modern is not None:
+        has_next, numbers = modern
+        visible.update(numbers)
+        next_url = build_catalogue_url(page+1) if has_next else None
     page_text = _clean(soup.get_text(" ", strip=True))
     hints: list[str] = []
     for pattern in (
@@ -374,6 +386,10 @@ def fabrikant_status(text: str) -> tuple[str, str | None]:
         return "unknown", None
     raw = _clean(match.group(1))
     lowered = raw.lower()
+    if "ожидается начало" in lowered:
+        return "scheduled", raw
+    if "завершен" in lowered or "завершён" in lowered or "окончен" in lowered:
+        return "unknown", raw
     if re.search(r"при[её]м\s+заявок", lowered):
         return "active", raw
     if "приостанов" in lowered:
@@ -445,9 +461,10 @@ def parse_detail_fields(html: str | bytes) -> FabrikantDetailFields:
 
     title = _label_segment(
         text,
-        r"предмет\s+договора",
+        r"предмет\s+(?:договора|торгов)",
         (
             r"категория\s+объекта",
+            r"описание\s+предмета\s+торгов",
             r"характеристики\s+объекта",
             r"коды?\s+окпд",
             r"классификатор\s+имущества",
@@ -498,10 +515,13 @@ def parse_detail_fields(html: str | bytes) -> FabrikantDetailFields:
         start_price=fabrikant_initial_money(text),
         current_price=fabrikant_current_money(text),
         category_text=category_text,
-        category=normalize_category(category_text, text),
+        category=normalize_category(category_text, (title or "")+" "+text),
         address=address,
         cadastral_number=cadastral.group(1) if cadastral else None,
         area=area,
+        application_start_at=_parse_date_after(
+            text, r"дата\s+и\s+время\s+начала\s+при[её]ма\s+заявок"
+        ),
         application_deadline=_parse_date_after(
             text, r"дата\s+и\s+время\s+окончания\s+при[её]ма\s+заявок"
         ),
@@ -567,6 +587,8 @@ def parse_detail_lot(
         platform_name=profile.platform_name,
         platform_code=profile.platform_code,
         application_deadline=fields.application_deadline,
+        application_start_at=fields.application_start_at,
+        auction_timezone="Europe/Moscow" if any((fields.application_start_at, fields.application_deadline, fields.auction_at)) else None,
         auction_at=fields.auction_at,
     )
 
@@ -577,6 +599,7 @@ def resolve_catalogue_page_lots(
     *,
     page: int,
     read_get: Callable[[str], requests.Response],
+    seen_procedures: set[str] | None = None,
 ) -> list[NormalizedLot]:
     """Resolve every procedure card to canonical individual lot details."""
     procedures = procedure_urls(
@@ -591,11 +614,13 @@ def resolve_catalogue_page_lots(
     seen: set[str] = set()
     unresolved: list[str] = []
     for procedure_url in procedures:
-        procedure_response = read_get(procedure_url)
-        urls = lot_urls(
-            procedure_response.content,
-            base_url=procedure_response.url or procedure_url,
-        )
+        if seen_procedures is not None and procedure_url in seen_procedures:
+            continue
+        from bankrotai.connectors.etp_sources.fabrikant_pagination import read_procedure_lot_urls
+        try:
+            urls = read_procedure_lot_urls(procedure_url, read_get=read_get, extract_lot_urls=lot_urls)
+        except ValueError as exc:
+            raise FabrikantContractError(str(exc)) from exc
         if not urls:
             unresolved.append(procedure_url)
             continue
@@ -622,12 +647,14 @@ def resolve_catalogue_page_lots(
                 "trade_level_listing": False,
             })
             lots.append(detail)
+        if seen_procedures is not None:
+            seen_procedures.add(procedure_url)
 
     if unresolved:
         raise FabrikantContractError(
             "catalogue procedure did not expose an individual lot route"
         )
-    if not lots:
+    if not lots and seen_procedures is None:
         raise FabrikantContractError(
             "no individually identified lots resolved from catalogue page"
         )
@@ -636,6 +663,7 @@ def resolve_catalogue_page_lots(
 
 class FabrikantConnector(HtmlEtpConnector):
     """Fabrikant procedure catalogue -> canonical individual lot connector."""
+    _seen_procedures: set[str]
 
     def _read_get(self, url: str) -> requests.Response:
         return self._read_request(
@@ -654,6 +682,7 @@ class FabrikantConnector(HtmlEtpConnector):
                 response,
                 page=page,
                 read_get=self._read_get,
+                seen_procedures=self._seen_procedures,
             )
         except FabrikantContractError as exc:
             raise SourceSchemaError(f"fabrikant.ru: {exc}") from exc
@@ -667,6 +696,8 @@ class FabrikantConnector(HtmlEtpConnector):
             else EtpSearchFilters(**(filters or {}))
         )
         page = max(1, int(cursor or normalized.page))
+        if page == 1 or not hasattr(self, "_seen_procedures"):
+            self._seen_procedures = set()
         response = await asyncio.to_thread(self._request, page)
         lots = await asyncio.to_thread(self._resolve_page, response, page=page)
         page_contract = parse_catalogue_page(
@@ -676,7 +707,7 @@ class FabrikantConnector(HtmlEtpConnector):
         )
         next_cursor = (
             str(page + 1)
-            if lots and page_contract.has_next_page
+            if page_contract.has_next_page
             else None
         )
         return ConnectorPage(

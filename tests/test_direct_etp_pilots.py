@@ -1,4 +1,4 @@
-"""ETP pilot registry contract: visible to developers, not the production scheduler."""
+"""Legacy pilot registry and verified non-archiving production adapters."""
 from __future__ import annotations
 
 import asyncio
@@ -57,7 +57,10 @@ def test_registry_preserves_source_specific_pilots_only():
 
 def test_only_approved_non_archiving_pilots_are_enabled_in_default_sync():
     scheduled = {x.source_id for x in default_source_specs()}
-    assert scheduled.intersection(PILOT_SOURCE_IDS) == {"cdtrf.ru", "nistp.ru"}
+    approved = set(PILOT_SOURCE_IDS) - {"rts-tender.ru"}
+    assert scheduled.intersection(PILOT_SOURCE_IDS) == approved
+    specs = [x for x in default_source_specs() if x.source_id in approved]
+    assert all(x.reconcile_missing is False and x.require_source_end is True for x in specs)
 
 
 def test_preview_recovers_candidate_but_cannot_mutate_database():

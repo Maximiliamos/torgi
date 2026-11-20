@@ -351,7 +351,8 @@ def test_drop_in_connector_is_source_specific_and_non_archiving() -> None:
     )
 
 
-def test_source_specific_connector_is_not_scheduled_for_production() -> None:
+def test_source_specific_connector_is_scheduled_without_missing_reconciliation() -> None:
     from bankrotai.services.ingestion import default_source_specs
 
-    assert "zakazrf.ru" not in {spec.source_id for spec in default_source_specs()}
+    spec=next(spec for spec in default_source_specs() if spec.source_id=='zakazrf.ru')
+    assert spec.require_source_end and spec.max_batches==500 and not spec.reconcile_missing

@@ -33,11 +33,16 @@ def probe_torgi_russia_catalogue(*, timeout_seconds: float = 5.0) -> dict[str, A
         if any(
             lot.source_system != "torgi-russia.ru"
             or lot.start_price is None
-            or lot.auction_status in {"unknown", "", None}
             or not lot.region_name
             for lot in lots
         ):
             raise ValueError("Torgi Russia source probe invalid lot data")
+        # An explicitly unknown stage is valid conservative parser output.
+        # Require positive status evidence in the sample, without inventing
+        # statuses for other individual lots or declaring them closed.
+        known_status_lots = sum(lot.auction_status not in {"unknown", "", None} for lot in lots)
+        if known_status_lots == 0:
+            raise ValueError("Torgi Russia source probe has no observed lot status")
         total = metadata.get("total")
         if total is None or int(total) < len(lots):
             raise ValueError("Torgi Russia source probe invalid total count")
@@ -48,6 +53,8 @@ def probe_torgi_russia_catalogue(*, timeout_seconds: float = 5.0) -> dict[str, A
             "http_status": 200, "url": url,
             "region_filter_id": 23,
             "validated_lots": len(lots),
+            "known_status_lots": known_status_lots,
+            "unknown_status_lots": len(lots) - known_status_lots,
             "catalogue_total": int(total),
             "details_or_archive_verified": False,
         }

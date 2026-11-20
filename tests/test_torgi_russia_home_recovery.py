@@ -111,3 +111,14 @@ def test_torgi_russia_full_automatic_source_must_not_archive_missing_historical_
     assert specs[0].reconcile_missing is False
     assert specs[0].require_source_end is True
     assert source_full_specs("torgi-russia.ru")[0].reconcile_missing is False
+
+
+def test_one_unknown_stage_does_not_hide_other_verified_lots(monkeypatch):
+    unknown = lot('torgi-russia:778', auction_status='unknown')
+    fake = FakeClient(lots=[lot(), unknown])
+    _substitute(monkeypatch, fake)
+    result = torgi_russia_health.probe_torgi_russia_catalogue()
+    assert result['success'] is True
+    assert result['known_status_lots'] == 1
+    assert result['unknown_status_lots'] == 1
+    assert unknown.auction_status == 'unknown'

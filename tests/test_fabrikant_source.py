@@ -77,6 +77,14 @@ def test_procedure_route_is_not_an_individual_fabrikant_lot() -> None:
     assert procedure_urls(html, base_url=FABRIKANT_PROFILE.listing_url) == [procedure]
 
 
+def test_catalogue_apex_link_uses_the_same_canonical_procedure_without_a_redirect():
+    html = '<a href="https://fabrikant.ru/v2/trades/procedure/view/PROC_token-1">Lot</a>'
+    assert procedure_urls(html, base_url=FABRIKANT_PROFILE.listing_url) == [
+        'https://www.fabrikant.ru/v2/trades/procedure/view/PROC_token-1']
+    assert procedure_urls('<a href="https://fabrikant.ru.evil.test/v2/trades/procedure/view/foreign">X</a>',
+                          base_url=FABRIKANT_PROFILE.listing_url) == []
+
+
 def test_fabrikant_catalogue_census_preserves_filter_and_form_contract() -> None:
     page = parse_catalogue_page(
         fixture("catalogue_page.html"),
@@ -233,3 +241,44 @@ def test_fabrikant_catalogue_fails_closed_when_procedure_has_no_lot_route() -> N
 
     with pytest.raises(SourceSchemaError, match="individual lot route"):
         asyncio.run(connector.search({}))
+
+
+def test_modern_search_buttons_prove_next_and_terminal_and_echo_requested_page():
+    def html(page, disabled=''):
+        return f'''<ul class="rc-pagination" data-slot="pagination">
+        <li class="rc-pagination-item rc-pagination-item-active" title="{page}">{page}</li>
+        <li class="rc-pagination-next" aria-disabled="{str(bool(disabled)).lower()}">
+        <button aria-label="next page" {disabled}></button></li></ul>'''
+    first=parse_catalogue_page(html(1),base_url=FABRIKANT_PROFILE.listing_url,page=1)
+    assert first.has_next_page and 'page_number=2' in first.next_url
+    last=parse_catalogue_page(html(100,'disabled'),base_url=FABRIKANT_PROFILE.listing_url,page=100)
+    assert not last.has_next_page and last.next_url is None
+    with pytest.raises(ValueError,match='different selected page'):
+        parse_catalogue_page(html(1),base_url=FABRIKANT_PROFILE.listing_url,page=2)
+
+
+def test_procedure_lot_pagination_expands_only_the_same_procedure():
+    from bankrotai.connectors.etp_sources.fabrikant import lot_urls
+    from bankrotai.connectors.etp_sources.fabrikant_pagination import read_procedure_lot_urls
+    procedure='https://www.fabrikant.ru/v2/trades/procedure/view/PROC-A'
+    first=f'<a href="{procedure.replace("/view/", "/lot/view/")}/LOT-A">A</a><ul class="pagination"><li><a href="?page=2">2</a></li></ul>'
+    second=f'<a href="{procedure.replace("/view/", "/lot/view/")}/LOT-B">B</a><ul class="pagination"><li><a href="?page=1">1</a></li></ul>'
+    session=RouteSession({procedure:FakeResponse(first.encode(),procedure),
+                         procedure+'?page=2':FakeResponse(second.encode(),procedure+'?page=2')})
+    urls=read_procedure_lot_urls(procedure,read_get=session.get,extract_lot_urls=lot_urls)
+    assert len(urls)==2 and urls[0].endswith('/LOT-A') and urls[1].endswith('/LOT-B')
+    assert session.requested_urls==[procedure,procedure+'?page=2']
+    foreign=first.replace('?page=2','https://evil.test/v2/trades/procedure/view/PROC-A?page=2')
+    session.responses[procedure]=FakeResponse(foreign.encode(),procedure)
+    with pytest.raises(ValueError,match='identity or origin'):
+        read_procedure_lot_urls(procedure,read_get=session.get,extract_lot_urls=lot_urls)
+
+
+def test_modern_own_lot_subject_and_future_intake_are_read_without_navigation_category():
+    page='''<nav>Каталог торгов Закупки</nav><div>Лот №1. Земельный участок - Ожидается начало приема заявок</div>
+    <div>Предмет торгов Земельный участок 76:23:010101:1 Описание предмета торгов Проверенный участок</div>
+    <div>Начальная цена предмета договора 100 000,00 Рубль (RUB)</div>
+    <div>Дата и время начала приема заявок 25.11.2026 10:00</div>'''
+    lot=parse_detail_lot(FABRIKANT_PROFILE,page,detail_url='https://www.fabrikant.ru/v2/trades/procedure/lot/view/PROC-A/LOT-A')
+    assert lot.category=='land' and lot.auction_status=='scheduled' and lot.start_price==100000
+    assert lot.application_start_at.isoformat()=='2026-11-25T10:00:00'

@@ -134,7 +134,7 @@ def classify_sistematorg_asset(value: str) -> str:
     if "земельн" in lowered or "земли " in lowered:
         return "land"
     if any(word in lowered for word in (
-        "недвижим", "квартир", "комнат", "жилое помещ", "нежилое помещ",
+        "недвижим", "квартир", "комнат", "помещени",
         "здани", "гараж", "машино-мест", "жилой дом", "сооружен",
         "имущественный комплекс",
     )):
@@ -495,7 +495,9 @@ def parse_sistematorg_detail_lots(
         )
         normalized_status = _status(status_text or "")
         combined = _clean(f"{title} {description}")
-        category = classify_sistematorg_asset(combined)
+        category = classify_sistematorg_asset(title)
+        if category == "other":
+            category = classify_sistematorg_asset(combined)
         schedule = _schedule(segment)
 
         cadastral = _CADASTRAL_RE.search(combined)

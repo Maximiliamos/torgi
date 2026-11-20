@@ -32,7 +32,7 @@ from bankrotai.services.ingestion import (
     run_nationwide_sync,
 )
 from bankrotai.services.scheduled_ingestion_modes import (
-    SEVEN_SOURCE_IDS, resolve_nationwide_specs, retry_spec_count, scheduled_specs,
+    SEVEN_SOURCE_IDS, SCHEDULED_SOURCE_IDS, resolve_nationwide_specs, retry_spec_count, scheduled_specs,
 )
 from bankrotai.services.scheduled_source_preflight import run_scheduled_source_preflight
 from bankrotai.services.scheduled_refresh_attempt import ScheduledRefreshAttempt
@@ -1093,7 +1093,7 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
         )
     try:
         attempt = ScheduledRefreshAttempt.create(
-            mode=mode, total_sources=len(SEVEN_SOURCE_IDS), session_factory=SessionLocal,
+            mode=mode, total_sources=len(SCHEDULED_SOURCE_IDS), session_factory=SessionLocal,
         )
     except SyncAlreadyRunningError as exc:
         _retry_automatic_refresh(
@@ -1103,7 +1103,7 @@ def automatic_nationwide_lot_refresh_task(self, mode: str) -> dict[str, Any]:
     skipped, scheduled_run_specs, preflight = attempt.prepare(
         global_network_blocked=_global_source_network_blocked,
         resolve_specs=lambda: scheduled_specs(mode, _unpaused_source_specs),
-        required_sources=SEVEN_SOURCE_IDS, preflight_runner=run_scheduled_source_preflight,
+        required_sources=SCHEDULED_SOURCE_IDS, preflight_runner=run_scheduled_source_preflight,
     )
     if skipped is not None:
         return skipped

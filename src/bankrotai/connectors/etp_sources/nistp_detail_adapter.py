@@ -39,6 +39,8 @@ async def fetch_nistp_lot(connector: HtmlEtpConnector, external_id: str) -> Norm
     )
     if section.external_id != external_id:
         raise SourceSchemaError("nistp.ru: fetched individual lot identity mismatch")
+    from bankrotai.connectors.etp_sources.nistp_procedure_dates import procedure_dates
+    dates = procedure_dates(response.content)
     return NormalizedLot(
         external_id=section.external_id,
         source="nistp",
@@ -58,7 +60,11 @@ async def fetch_nistp_lot(connector: HtmlEtpConnector, external_id: str) -> Norm
         lot_url=detail_url,
         source_url=detail_url,
         detail_level="detail",
+        application_start_at=dates.get('application_start_at'),
+        application_deadline=dates.get('application_deadline'),
+        auction_at=dates.get('auction_at'), auction_timezone='Europe/Moscow' if dates else None,
         raw_data={
+            'detail_dates_verified': bool(dates),
             "trade_id": section.trade_code,
             "lot_number": str(section.lot_number),
             "native_lot_nid": section.native_lot_nid,

@@ -149,6 +149,16 @@ def test_sistematorg_issue_1065_negative_fixture_rights_are_not_property() -> No
     ] * 6
 
 
+def test_room_title_is_not_reclassified_as_land_from_its_incidental_legal_description():
+    page='''<html><body>Идентификационный номер: 20401-ОАОФ Всего лотов: 1.
+    Лот № 1: Номер лота: 1 Наименование имущества: помещение жилое
+    Сведения об имуществе: квартира 76:23:010101:1, право использования земельного участка.
+    Начальная цена: 150 000.00 руб. Статус торгов: Прием заявок
+    Официальная карточка индивидуального имущества с описанием и ценой.</body></html>'''
+    lots=parse_sistematorg_detail_lots(page,detail_url='https://sistematorg.com/trade_view.php?trade_nid=70001')
+    assert len(lots)==1 and lots[0].category=='real_estate' and lots[0].start_price==150000
+
+
 def test_sistematorg_single_lot_1166_compact_fallback_remains_strict() -> None:
     html = """
     <html><body><h1>Торги по продаже квартиры</h1>
