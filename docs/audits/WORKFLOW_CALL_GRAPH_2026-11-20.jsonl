@@ -16,3 +16,12 @@
 {"path":".github/workflows/etp-ruson-contract-readonly.yml","invoked_scripts":["scripts/ruson_readonly_audit.py"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/etp-s5-canary-readiness.yml","invoked_scripts":["scripts/etp-canary-readiness.ps1"],"upstream_workflow_names":["P11 production acceptance","Public WEB smoke","Production functional reliability"],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/etp-verified-canary-geo-map.yml","invoked_scripts":["scripts/verify-etp-canary-acceptance.ps1"],"upstream_workflow_names":["ETP S5 exact-SHA read-only canary readiness"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/geo-managed-stale-recovery.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/geo-p0-readonly.yml","invoked_scripts":["scripts/run-geo-p0-readonly.ps1","scripts/property_address_impact_probe.py","scripts/torgi_gov_detail_probe.py","scripts/bidexpert_detail_probe.py","scripts/geo_no_match_live_probe.py"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/geocode-backfill.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/home-origin-diagnostics.yml","invoked_scripts":["scripts/home-origin-diagnostics.ps1"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/home-performance-diagnostics.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/home-reverse-relay.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/home-runner-network-diagnostics.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/home-secondary-deploy.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/lot-issue-reports-export.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
