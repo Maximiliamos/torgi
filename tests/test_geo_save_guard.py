@@ -10,6 +10,47 @@ from bankrotai.geo import CadastralObjectResult
 from bankrotai.services import geo_backfill
 
 
+@pytest.mark.parametrize('invalid', ['cached_locality', 'different_house', 'different_cadastre'])
+def test_final_persistence_rejects_invalid_cached_or_fallback_result(invalid):
+    from bankrotai.geo import apply_lot_geo_result
+    engine=create_engine('sqlite:///:memory:');Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        p=ProcessedLot(source_system='example',external_id='one',title='Building',category='commercial_building',
+            address='г. Ярославль, ул. Победы, д. 12',region_code='76',review_status='approved',rating=78)
+        s.add(p);s.commit()
+        result=CadastralObjectResult(query='г. Ярославль, ул. Победы, д. 12',
+            address='г. Ярославль, ул. Победы, д. 12',lat=57.6261,lon=39.8845,source='photon',confidence='high')
+        if invalid=='cached_locality':
+            result.query='г. Ярославль'
+        elif invalid=='different_house':
+            result.address='г. Ярославль, ул. Победы, д. 99'
+        else:
+            p.cadastral_number='76:23:010101:1';p.cadastral_numbers=[p.cadastral_number]
+            result.source='nspd';result.cadastral_number='76:23:010101:99'
+        assert not apply_lot_geo_result(s,p,result)
+        s.flush()
+        assert s.scalar(select(LotGeoSnapshot)) is None
+        assert p.current_geo_lat is None and p.needs_geo_check
+        assert p.review_status=='approved' and p.rating==78
+        assert result.attempts[-1]['valid'] is False
+    engine.dispose()
+
+
+def test_a_confirmed_second_cadastre_in_a_multi_property_lot_remains_eligible():
+    from bankrotai.geo import apply_lot_geo_result
+    engine=create_engine('sqlite:///:memory:');Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        p=ProcessedLot(source_system='example',external_id='one',title='Building and land',category='land',
+            address='г. Ярославль, ул. Победы, д. 12',region_code='76',
+            cadastral_number='76:23:010101:1',cadastral_numbers=['76:23:010101:1','76:23:010101:2'])
+        s.add(p);s.commit()
+        result=CadastralObjectResult(query='76:23:010101:2',cadastral_number='76:23:010101:2',
+            address='г. Ярославль, ул. Победы, д. 12',lat=57.6261,lon=39.8845,source='nspd',confidence='high')
+        assert apply_lot_geo_result(s,p,result)
+        assert p.cadastral_number=='76:23:010101:1'
+    engine.dispose()
+
+
 @pytest.mark.parametrize("isolated", [False, True])
 @pytest.mark.parametrize("change", ["address", "cadastres", "archived", "price"])
 def test_source_changes_during_lookup_cannot_attach_stale_coordinates(monkeypatch, isolated, change):

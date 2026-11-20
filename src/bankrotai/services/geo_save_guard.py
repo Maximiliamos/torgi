@@ -8,6 +8,26 @@ from sqlalchemy import select
 from bankrotai.db import ProcessedLot
 
 
+def final_geo_result_allowed(lot, result):
+    """Cached and fallback results must satisfy the current lot before saving."""
+    if (result is None or result.lat is None or result.lon is None
+            or getattr(result, "source", None) == "manual"):
+        return True
+    from bankrotai.geo import validate_geocoding_result
+
+    cadastre = lot.cadastral_number
+    if result.cadastral_number and result.cadastral_number in (lot.cadastral_numbers or []):
+        cadastre = result.cadastral_number
+    valid, reason = validate_geocoding_result(result, cadastral_number=cadastre,
+        address=lot.address, region_name=lot.region_name, region_code=lot.region_code)
+    if not valid:
+        lot.needs_geo_check = True
+        result.attempts = list(result.attempts or []) + [
+            {"source": result.source, "valid": False, "reason": reason}]
+        result.error = "validation:" + reason
+    return valid
+
+
 def _same_inputs(lot, item, expected_key):
     from bankrotai.services.geo_backfill import GeoWorkItem, _work_key
 

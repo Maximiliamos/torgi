@@ -2004,8 +2004,16 @@ def geocoding_result_quality_score(
         score = min(score, 49)
     return max(0, min(100, int(score)))
 
-
 def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: CadastralObjectResult | None) -> bool:
+    from bankrotai.services.geo_save_guard import final_geo_result_allowed
+    if not final_geo_result_allowed(lot, final_result):
+        return False
+    from bankrotai.services.geographic_source_identity import geographic_source_identity_available
+    if not geographic_source_identity_available(session, lot, final_result):
+        lot.needs_geo_check = True
+        if final_result is not None:
+            final_result.attempts = list(final_result.attempts or []) + [{"source": "source_input_identity", "valid": False, "reason": "source_identity_unverified"}]
+        return False
     if not final_result or not final_result.lat or not final_result.lon:
         lot.needs_geo_check = True
         return False
@@ -2057,8 +2065,11 @@ def apply_lot_geo_result(session: Session, lot: ProcessedLot, final_result: Cada
 
     return True
 
-
 def enrich_lot_geo(session: Session, lot: ProcessedLot) -> bool:
+    from bankrotai.services.geographic_source_identity import geographic_source_identity_available
+    if not geographic_source_identity_available(session, lot):
+        lot.needs_geo_check = True
+        return False
     final_result = resolve_lot_geo(
         lot.cadastral_number,
         lot.address,
@@ -2069,7 +2080,6 @@ def enrich_lot_geo(session: Session, lot: ProcessedLot) -> bool:
         region_code=lot.region_code,
     )
     return apply_lot_geo_result(session, lot, final_result)
-
 
 def distance_between(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return distance_km(lat1, lon1, lat2, lon2)

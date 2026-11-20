@@ -1,0 +1,227 @@
+from datetime import datetime
+
+import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+
+from bankrotai.db import AuditLog, Base, CanonicalLot, LotGeoSnapshot, MapDataset, ProcessedLot, SourceLot
+from bankrotai.services.map_audited_transition import audited_transition_ids
+from bankrotai.services.reported_lot_repair import _state
+
+
+def certificate(invalid=None, terminal=False, published_audit=False):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        previous = MapDataset(version="old-r11", published_at=datetime(2026, 11, 18, 10))
+        candidate = MapDataset(version="new-r12", created_at=datetime(2026, 11, 19, 10))
+        p = ProcessedLot(source_system="example", external_id="one", title="Land", category="land",
+                         auction_status="closed" if terminal else "active", is_archived=terminal)
+        s.add_all([previous, candidate, p]); s.flush()
+        g = LotGeoSnapshot(lot_id=p.id, observed_at=datetime(2026, 11, 17), geo_source="photon", geo_method="address",
+                           centroid_lat=57.6, centroid_lon=39.8,
+                           metadata_json={"query": "Ярославская область, г. Ярославль, улица Победы, дом 12",
+                                          "address": "Ярославская область, г. Ярославль, улица Победы"})
+        s.add(g); s.flush()
+        data = {"snapshot_id": g.id, "snapshot_state_sha256": _state(g, None),
+                "reason": "matched_property_number_missing", "source_fact_changes": 0,
+                "historical_snapshots_deleted": 0}
+        event = AuditLog(user_id="operator", entity_type="lot", entity_id=str(p.id),
+                         action="geo_projection_policy_repair", created_at=datetime(2026, 11, 19, 9),
+                         metadata_json=data)
+        if published_audit:
+            event.action = "published_geo_projection_policy_audit"
+            data.update(dataset_id=previous.id, dataset_version=previous.version)
+            if invalid == "dataset_id":
+                data["dataset_id"] = previous.id + 100
+            elif invalid == "dataset_version":
+                data["dataset_version"] = "another-r11"
+            elif invalid == "post_publication_snapshot":
+                g.observed_at = datetime(2026, 11, 19, 8)
+                data["snapshot_state_sha256"] = _state(g, None)
+        if terminal:
+            c = CanonicalLot(canonical_key="example:one", title="Land", category="land")
+            s.add(c); s.flush()
+            proof = {"checked_at_utc": "2026-11-19T08:00:00+00:00", "sha256": "a"*64, "value": "completed"}
+            source = SourceLot(canonical_lot_id=c.id, processed_lot_id=p.id, source_system="example",
+                               external_id="one", source_status="completed", is_active=False, is_archived=True,
+                               raw_data={"verified_source_fields": {"auction_status": proof}})
+            s.add(source)
+            event.action = "exact_verified_source_source_repair"
+            event.metadata_json = {"source_system": "example", "external_id": "one",
+                                   "changes": {"auction_status": {"before": "active", "after": "completed"}}}
+            if invalid == "expired":
+                proof["checked_at_utc"] = "2026-11-17T08:00:00+00:00"
+            elif invalid == "proof_value":
+                proof["value"] = "active"
+            elif invalid == "bad_sha":
+                proof["sha256"] = "unverified"
+            elif invalid == "source_active":
+                source.is_active = True
+            elif invalid == "binding":
+                source.external_id = "another-sale"
+        points = {p.id: {"lat": 57.6, "lon": 39.8}}
+        new_ids = set()
+        if invalid == "snapshot_sha":
+            g.metadata_json = {**g.metadata_json, "query": "different"}
+        elif invalid == "old_geometry":
+            points[p.id]["lat"] = 58.6
+        elif invalid == "missing_geometry":
+            points[p.id] = {}
+        elif invalid == "audit_time":
+            event.created_at = datetime(2026, 11, 18, 9)
+        elif invalid == "future_audit":
+            event.created_at = datetime(2026, 11, 19, 11)
+        elif invalid == "actor":
+            event.user_id = "someone"
+        elif invalid == "revision":
+            previous.version = "old-r12"
+        elif invalid == "repeat_revision":
+            candidate.version = "new-r13"
+        elif invalid == "retained":
+            new_ids.add(p.id)
+        elif invalid == "reason":
+            event.metadata_json = {**data, "reason": "wrong_reason"}
+        s.add(event); s.commit()
+        result = audited_transition_ids(s, previous=previous, candidate=candidate,
+                                        old_points=points, new_ids=new_ids)
+    engine.dispose()
+    return result
+
+
+def test_only_exact_published_geometry_and_unchanged_snapshot_certify_removal():
+    assert certificate() == {1}
+
+
+def test_published_point_audit_can_certify_a_historical_projection():
+    assert certificate(published_audit=True) == {1}
+
+
+@pytest.mark.parametrize("invalid", ["dataset_id", "dataset_version", "post_publication_snapshot",
+    "snapshot_sha", "old_geometry", "missing_geometry", "audit_time", "future_audit", "actor",
+    "revision", "repeat_revision", "retained", "reason"])
+def test_historical_point_audit_keeps_all_dataset_geometry_and_time_guards(invalid):
+    assert certificate(invalid, published_audit=True) == set()
+
+
+@pytest.mark.parametrize("invalid", ["snapshot_sha", "old_geometry", "missing_geometry", "audit_time",
+                                   "future_audit", "actor", "revision", "repeat_revision", "retained", "reason"])
+def test_uncertified_or_repeated_geo_loss_still_counts_against_coverage(invalid):
+    assert certificate(invalid) == set()
+
+
+def test_owned_literal_terminal_status_with_post_publication_audit_certifies_removal():
+    assert certificate(terminal=True) == {1}
+
+
+@pytest.mark.parametrize("invalid", ["expired", "proof_value", "bad_sha", "source_active", "binding", "audit_time"])
+def test_unverified_terminal_status_cannot_discount_baseline(invalid):
+    assert certificate(invalid, terminal=True) == set()
+
+
+@pytest.mark.parametrize("surviving,tamper,expected,late_tamper", [(10, False, "published", False), (3, False, "rejected", False), (10, True, "rejected", False), (10, False, "rejected", True)])
+def test_same_global_and_dimensional_ratios_still_protect_uncertified_population(monkeypatch, surviving, tamper, expected, late_tamper):
+    from types import SimpleNamespace
+    from sqlalchemy.orm import sessionmaker
+    from bankrotai.db import MapTile
+    from bankrotai.services import map_builder
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(map_builder, "get_settings", lambda: SimpleNamespace(min_map_points=0, min_map_coverage_ratio=0.5))
+    with factory() as s:
+        old = MapDataset(version="old-r11", status="ready", is_current=True, point_count=40,
+                         published_at=datetime(2026, 11, 18, 10))
+        new = MapDataset(version="new-r12", status="building", point_count=surviving, tile_count=1,
+                         created_at=datetime(2026, 11, 19, 10))
+        s.add_all([old, new]); s.flush()
+        lots = [ProcessedLot(source_system="affected", external_id=f"one:{i}", title="Land", category="land",
+                             region_code="76", auction_status="active") for i in range(40)]
+        s.add_all(lots); s.flush()
+        for lot in lots[:30]:
+            snapshot = LotGeoSnapshot(lot_id=lot.id, observed_at=datetime(2026, 11, 17), geo_source="photon", geo_method="address",
+                                      centroid_lat=57.6, centroid_lon=39.8,
+                                      metadata_json={"query": "Ярославская область"})
+            s.add(snapshot); s.flush()
+            s.add(AuditLog(user_id="operator", entity_type="lot", entity_id=str(lot.id),
+                           action="geo_projection_policy_repair", created_at=datetime(2026, 11, 19, 9),
+                           metadata_json={"reason": "region_only_address", "snapshot_id": snapshot.id,
+                                          "snapshot_state_sha256": "wrong" if tamper else _state(snapshot, None),
+                                          "source_fact_changes": 0, "historical_snapshots_deleted": 0}))
+        extra = [ProcessedLot(source_system="unaffected", external_id=f"other:{i}", title="Land", category="land",
+                              region_code="77", auction_status="active") for i in range(100)] if late_tamper else []
+        s.add_all(extra); s.flush()
+        old.point_count += len(extra); new.point_count += len(extra)
+        def features(rows):
+            return {"features": [{"kind": "lot", "id": p.id, "lat": 57.6, "lon": 39.8} for p in rows]}
+        s.add_all([MapTile(dataset_id=old.id, z=12, x=1, y=1, etag="old", feature_count=old.point_count, payload_json=features(lots+extra)),
+                   MapTile(dataset_id=new.id, z=12, x=1, y=1, etag="new", feature_count=new.point_count, payload_json=features(lots[30:30+surviving]+extra))])
+        s.commit(); old_id, new_id = old.id, new.id
+        failures = map_builder._dimension_coverage_failures(s, current_dataset_id=old_id, new_dataset_id=new_id, minimum_ratio=0.5)
+        assert bool(failures) == (expected == "rejected" and not late_tamper)
+        if late_tamper:
+            for event in s.scalars(select(AuditLog)):
+                event.metadata_json = {**event.metadata_json, "snapshot_state_sha256": "changed-after-preflight"}
+            s.commit()
+    result = map_builder._promote_map_dataset(factory, dataset_id=new_id, expected_current_id=old_id, dimension_failures=failures)
+    assert result["status"] == expected
+    if late_tamper:
+        assert result["reason"] == "dataset_dimension_coverage_below_threshold"
+    if expected == "published":
+        assert result["certified_obsolete_previous_members"] == 30
+    with factory() as s:
+        assert s.get(MapDataset, old_id).is_current == (expected != "published")
+    engine.dispose()
+
+
+@pytest.mark.parametrize("source,identity,expected", [
+    ("sistematorg.com","sistematorg.com:12345",True),
+    ("aukcioncenter.ru","aukcioncenter.ru:12345",True),
+    ("sistematorg.com","sistematorg.com:12345:2",False),
+    ("other","other:12345",False),
+])
+def test_only_known_procedure_shapes_are_discounted_during_identity_scope_transition(source,identity,expected):
+    engine=create_engine("sqlite:///:memory:");Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        old=MapDataset(version="old-r11",published_at=datetime(2026,11,18,10))
+        new=MapDataset(version="new-r12",created_at=datetime(2026,11,19,10))
+        p=ProcessedLot(source_system=source,external_id=identity,title="Land",category="land")
+        s.add_all([old,new,p]);s.commit()
+        result=audited_transition_ids(s,previous=old,candidate=new,old_points={p.id:{"lat":57.6,"lon":39.8}},new_ids=set())
+        assert (p.id in result)==expected
+    engine.dispose()
+
+
+@pytest.mark.parametrize("invalid", [None, "missing_reconcile", "failed_run", "old_run", "later_metadata_write", "unknown_source_status", "wrong_binding", "negative_scope_only", "missing_counter", "stale_observation"])
+def test_regular_successful_primary_closure_retires_a_member_after_the_quality_transition(invalid):
+    from bankrotai.db import LotSyncRun, LotSyncSourceRun
+    engine=create_engine("sqlite:///:memory:");Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        previous=MapDataset(version="old-r12",published_at=datetime(2026,11,19,8))
+        candidate=MapDataset(version="next-r12",created_at=datetime(2026,11,19,12))
+        p=ProcessedLot(source_system="bidexpert.ru",external_id="bidexpert:123456",title="Land",category="land",auction_status="closed",is_archived=True)
+        c=CanonicalLot(canonical_key="bidexpert:123456",title="Land",category="land")
+        run=LotSyncRun(id="normal",trigger_type="scheduled",status="success")
+        s.add_all([previous,candidate,p,c,run]);s.flush()
+        observed=LotSyncSourceRun(sync_run_id="normal",source_system="bidexpert.ru",status="success",
+            started_at=datetime(2026,11,19,9),finished_at=datetime(2026,11,19,10))
+        source=SourceLot(canonical_lot_id=c.id,processed_lot_id=p.id,source_system="bidexpert.ru",external_id=p.external_id,
+            source_status="closed",is_archived=True,is_active=False,archive_reason="source_status",
+            last_sync_run_id="normal",last_seen_at=datetime(2026,11,19,9,30),raw_data={})
+        if invalid=="missing_reconcile":source.archive_reason="missing_from_successful_runs"
+        elif invalid=="failed_run":observed.status="failed"
+        elif invalid=="old_run":observed.started_at=datetime(2026,11,18,9)
+        elif invalid=="later_metadata_write":source.last_seen_at=datetime(2026,11,19,11)
+        elif invalid=="unknown_source_status":source.source_status="unknown"
+        elif invalid=="wrong_binding":source.external_id="bidexpert:654321"
+        elif invalid=="negative_scope_only":source.raw_data={"source_sale_eligibility":False}
+        elif invalid=="missing_counter":source.missing_successful_runs=2
+        elif invalid=="stale_observation":
+            previous.published_at=datetime(2026,9,1)
+            observed.started_at=datetime(2026,9,2,9);observed.finished_at=datetime(2026,9,2,10)
+            source.last_seen_at=datetime(2026,9,2,9,30)
+        s.add_all([observed,source]);s.commit()
+        actual=audited_transition_ids(s,previous=previous,candidate=candidate,
+            old_points={p.id:{"lat":57.6,"lon":39.8}},new_ids=set())
+        assert (actual=={p.id})==(invalid is None)
+    engine.dispose()

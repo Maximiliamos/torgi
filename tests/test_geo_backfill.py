@@ -195,8 +195,9 @@ def test_low_confidence_result_is_not_retried_until_geo_input_changes(monkeypatc
     first = geo_backfill.geocode_pending_lots(scope, limit=1)
     second = geo_backfill.geocode_pending_lots(scope, limit=1)
 
-    assert first["queued"] == first["processed"] == first["geocoded"] == 1
-    assert first["failed"] == 0
+    assert first["queued"] == first["processed"] == 1
+    assert first["geocoded"] == 0
+    assert first["failed"] == 1
     assert second["queued"] == second["processed"] == second["geocoded"] == 0
     assert second["failed"] == 0
     assert calls == 1
@@ -205,7 +206,8 @@ def test_low_confidence_result_is_not_retried_until_geo_input_changes(monkeypatc
         assert lot is not None
         assert lot.needs_geo_check is True
         assert lot.geo_input_hash is not None
-        assert len(session.scalars(select(LotGeoSnapshot).where(LotGeoSnapshot.lot_id == lot_id)).all()) == 1
+        assert lot.current_geo_lat is None and lot.current_geo_lon is None
+        assert not session.scalars(select(LotGeoSnapshot).where(LotGeoSnapshot.lot_id == lot_id)).all()
 
 
 def test_identical_inputs_share_one_bulk_provider_call(monkeypatch) -> None:

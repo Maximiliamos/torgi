@@ -11,7 +11,7 @@ import re
 from sqlalchemy import select
 
 from bankrotai.db import SourceLot, utc_now
-from bankrotai.services.asset_category import explicit_nonproperty_category
+from bankrotai.services.asset_category import explicit_nonproperty_category, primary_object_title
 from bankrotai.services.real_estate_filter import is_sale_real_estate_lot
 from bankrotai.services.mets_identity_aliases import publication_presence_ids
 
@@ -30,7 +30,7 @@ def exclusion_reason(lot):
         code = value.get("code") if isinstance(value, dict) else value
         if str(code or "").strip().upper() in {"RENT", "RENTAL", "LEASE"}:
             return "explicit_rental_transaction"
-    if re.match(r"\s*(?:аренда|субаренда|прав[оа]\s+аренды)\b", lot.title or "", re.I):
+    if re.match(r"\s*(?:аренда|субаренда|(?:продажа\s+)?прав[оа]\s+аренды)\b", primary_object_title(lot.title or ""), re.I):
         return "explicit_rental_title"
     return None
 
