@@ -25,3 +25,12 @@
 {"path":".github/workflows/home-runner-network-diagnostics.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/home-secondary-deploy.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
 {"path":".github/workflows/lot-issue-reports-export.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/manual-seven-source-refresh.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":true}
+{"path":".github/workflows/map-storage-compaction.yml","invoked_scripts":["scripts/compact-map-storage.ps1"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/origin-availability-diagnostics.yml","invoked_scripts":["scripts/home-origin-diagnostics.ps1","scripts/origin-ab-test.py"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/p1-data-quality.yml","invoked_scripts":["scripts/p1-production-audit.ps1"],"upstream_workflow_names":["Phase 3 Lite full source reconciliation"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/p11-production-acceptance.yml","invoked_scripts":["scripts/phase3-production-health.ps1","scripts/home-runner-network-diagnostics.ps1"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":true}
+{"path":".github/workflows/p13-historical-region-review.yml","invoked_scripts":[],"upstream_workflow_names":["Deploy home secondary origin"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/p16-read-only-baseline.yml","invoked_scripts":["scripts/p16-readonly-baseline.py","scripts/p13-production-eligibility-impact.py","scripts/p0-cross-source-dedup-impact.py"],"upstream_workflow_names":["Deploy home secondary origin"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/p2-production-maintenance.yml","invoked_scripts":["scripts/p2-production-maintenance.ps1"],"upstream_workflow_names":["Deploy home secondary origin"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/p7-geo-fast-drain.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
