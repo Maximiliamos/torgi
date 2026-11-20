@@ -1,160 +1,30 @@
-name: Public WEB smoke
-
+name: Public browser network diagnostic (read only)
 on:
   workflow_dispatch:
-    inputs:
-      functional_audit:
-        description: Run only the deep production journey for pre-merge branch verification
-        required: false
-        default: false
-        type: boolean
-  workflow_run:
-    workflows: [Deploy Cloudflare edge proxy]
-    types: [completed]
-  schedule:
-    - cron: "47 */6 * * *"
-
 permissions:
-  actions: read
   contents: read
-  issues: write
-
 concurrency:
-  # Keep exact-SHA post-deploy proofs distinct from scheduled/manual audits.
-  # A second Cloudflare completion must never cancel the first proof.
-  group: public-web-smoke-${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_run' }}
-
+  group: public-browser-network-diagnostic-20261120
+  cancel-in-progress: false
 jobs:
-  smoke:
-    if: >-
-      github.event_name != 'workflow_run' ||
-      (
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.head_branch == 'main'
-      )
-    # Playwright 1.55.1 cannot install Chromium on ubuntu-26.04.
+  diagnose:
+    if: github.ref == 'refs/heads/codex/public-browser-network-20261120'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      E2E_BASE_URL: https://sterdez.online
-      # Keep this workflow on the critical path only. The scheduled/manual
-      # production-functional workflow owns the deep real-data journey.
-      E2E_PRODUCTION_AUDIT: ${{ inputs.functional_audit && '1' || '0' }}
-      E2E_USERNAME: ${{ vars.AUTH_BOOTSTRAP_USERNAME || 'reader' }}
-      E2E_PASSWORD: ${{ secrets.AUTH_BOOTSTRAP_PASSWORD }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with: { node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with: {node-version: 22, cache: npm, cache-dependency-path: WEB/package-lock.json}
       - working-directory: WEB
         run: npm ci
       - working-directory: WEB
         run: npx playwright install --with-deps chromium
-      - name: Verify canonical production path and deployed SHA
-        continue-on-error: ${{ github.ref != 'refs/heads/main' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TRIGGER_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --max-time 20 \
-            https://api.sterdez.online/health/live >/dev/null
-          curl --fail --silent --show-error --max-time 20 \
-            https://api.sterdez.online/health/ready >/dev/null
-          test "$(curl --silent --show-error --max-time 30 -o /dev/null -w '%{http_code}' \
-            https://sterdez.online/api/auth/me)" = "401"
-
-          if test "$GITHUB_EVENT_NAME" = "workflow_run"; then
-            EXPECTED_SHA="$TRIGGER_DEPLOY_SHA"
-          else
-            EXPECTED_SHA="$(curl --fail --silent --show-error \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/cloudflare-edge-deploy.yml/runs?branch=main&status=success&per_page=1" \
-              | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs", []); print(runs[0]["head_sha"] if runs else "")')"
-          fi
-          test -n "$EXPECTED_SHA"
-
-          DEPLOYED_SHA="$(curl --fail --silent --show-error --max-time 20 \
-            -H 'Cache-Control: no-cache' https://sterdez.online/deployment.json \
-            | python -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
-          echo "Expected deployed WEB SHA: $EXPECTED_SHA"
-          echo "Observed deployed WEB SHA: $DEPLOYED_SHA"
-          test "$DEPLOYED_SHA" = "$EXPECTED_SHA"
-      - name: Run fast critical-path smoke
-        if: github.event_name != 'workflow_dispatch' || !inputs.functional_audit
+      - name: Compare public navigation protocols without credentials or writes
         working-directory: WEB
-        run: npx playwright test e2e/smoke.spec.ts
-      - name: Run deep production branch audit
-        if: github.event_name == 'workflow_dispatch' && inputs.functional_audit
-        working-directory: WEB
-        run: npx playwright test e2e/production-readonly.spec.ts
-      - if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        run: node scripts/public-network-diagnostic.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
         with:
-          name: public-web-smoke-failure-${{ github.run_id }}
-          path: WEB/test-results
+          name: public-browser-network-diagnostic
+          path: WEB/public-network-diagnostic.json
           retention-days: 7
-
-  notify-failure:
-    needs: smoke
-    if: failure() && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
-        with:
-          script: |
-            const title = '[Production] Public WEB smoke alert';
-            const body = `Public WEB smoke failed. [Open workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`;
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
-              ...context.repo,
-              state: 'open',
-              per_page: 100,
-            });
-            const existing = issues.find((issue) => issue.title === title && !issue.pull_request);
-            if (existing) {
-              await github.rest.issues.createComment({
-                ...context.repo,
-                issue_number: existing.number,
-                body,
-              });
-            } else {
-              await github.rest.issues.create({ ...context.repo, title, body });
-            }
-
-  recovery:
-    needs: smoke
-    if: success() && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
-        with:
-          script: |
-            const title = '[Production] Public WEB smoke alert';
-            const legacyPrefix = 'Public WEB smoke failed:';
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
-              ...context.repo,
-              state: 'open',
-              per_page: 100,
-            });
-            const matches = issues.filter((item) =>
-              !item.pull_request && (item.title === title || item.title.startsWith(legacyPrefix))
-            );
-            for (const issue of matches) {
-              if (issue.title === title) {
-                await github.rest.issues.createComment({
-                  ...context.repo,
-                  issue_number: issue.number,
-                  body: `Recovered in workflow run ${context.runId}.`,
-                });
-              }
-              await github.rest.issues.update({
-                ...context.repo,
-                issue_number: issue.number,
-                state: 'closed',
-                state_reason: 'completed',
-              });
-            }
