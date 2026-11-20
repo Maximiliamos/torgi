@@ -800,6 +800,8 @@ def test_desktop_can_explicitly_enable_local_fallback(monkeypatch) -> None:
 
 
 def test_nationwide_tasks_use_progress_watchdog_with_emergency_ceiling() -> None:
+    assert tasks._DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS >= 8 * 60 * 60
+    assert tasks._DURABLE_NATIONWIDE_SOFT_TIME_LIMIT_SECONDS < tasks._DURABLE_NATIONWIDE_HARD_TIME_LIMIT_SECONDS < 12 * 60 * 60
     for task in (
         tasks.nationwide_lot_sync_task,
         tasks.automatic_nationwide_lot_refresh_task,

@@ -21,7 +21,10 @@ def test_scheduled_nistp_detail_cap_matches_deployed_readonly_gate() -> None:
     assert len(specs) == len(default_source_specs()) == 20
     assert all(
         specs[source].reconcile_missing is False
-        and specs[source].max_batches == (3500 if source in {"rus-on.ru", "sistematorg.com"} else 500)
+        and specs[source].max_batches == (
+            6000 if source in {"arbbitlot.ru", "etpu.ru", "utpl.ru"}
+            else 3500 if source in {"rus-on.ru", "sistematorg.com"} else 500
+        )
         and specs[source].require_source_end is True
         for source in wanted
     )

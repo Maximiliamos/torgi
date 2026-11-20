@@ -1955,3 +1955,47 @@ def test_reconciliation_failure_rolls_back_all_missing_archive_changes(
         after = session.scalars(select(SourceLot).order_by(SourceLot.external_id)).all()
         assert [row.missing_successful_runs for row in after] == [1, 1]
         assert all(row.is_active is True and row.is_archived is False for row in after)
+
+
+@pytest.mark.parametrize('batch_writer', [True, False])
+def test_failed_etp_detail_cannot_create_or_overwrite_lot_facts(sessions, batch_writer):
+    sid = 'vertrades.ru'
+    def sample(identity, price=45900):
+        item = lot(identity, price=price)
+        item.source_system = sid
+        item.lot_url = item.source_url = 'https://arest.vertrades.ru/showTrades?id=101'
+        return item
+    class Verified(FakeConnector):
+        source_id = sid
+        capabilities = frozenset({'search', 'detail_enrichment'})
+        async def enrich_lot(self, item):
+            item.detail_level = 'detail'
+            item.raw_data['detail_enrichment_status'] = 'success'
+            return item
+    service = NationwideIngestionService(sessions, connector_factory=lambda _: Verified([[sample('vertrades.ru:101:1')]]), use_gis_batch_persistence=batch_writer)
+    spec = SourceSyncSpec(sid, {}, reconcile_missing=False, require_source_end=True)
+    first = service.create_run(triggered_by='test', trigger_type='manual', total_sources=1)
+    asyncio.run(service.run(first, (spec,)))
+    with sessions() as session:
+        p = session.scalar(select(ProcessedLot))
+        p.review_status, p.rating = 'approved', 7.5
+        session.commit()
+    class Failed(Verified):
+        detail_enrichment_version = 2
+        async def enrich_lot(self, item):
+            item.address = 'Unverified partial mutation'
+            raise ValueError('listing and individual detail price differ')
+    service.connector_factory = lambda _: Failed([[sample('vertrades.ru:101:1', 345900), sample('vertrades.ru:101:2', 345900)]])
+    second = service.create_run(triggered_by='test', trigger_type='manual', total_sources=1)
+    result = asyncio.run(service.run(second, (spec,)))
+    assert result['sources'][0]['status'] == 'failed'
+    assert result['sources'][0]['complete_source_run'] is False
+    with sessions() as session:
+        rows = list(session.scalars(select(SourceLot)))
+        assert len(rows) == 1
+        assert rows[0].external_id == 'vertrades.ru:101:1'
+        assert rows[0].start_price == rows[0].current_price == 45900
+        assert rows[0].last_sync_run_id == first
+        assert rows[0].raw_data['detail_enrichment_status'] == 'success'
+        p = session.scalar(select(ProcessedLot))
+        assert (p.start_price, p.current_price, p.review_status, p.rating) == (45900, 45900, 'approved', 7.5)

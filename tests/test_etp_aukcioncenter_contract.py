@@ -370,3 +370,9 @@ def test_lot_index_discovery_reads_only_explicit_provider_lot_numbers():
     <input name="lotNumber" value="5">
     """
     assert discover_lot_numbers(html) == (3, 4, 5)
+
+
+def test_transport_purpose_of_building_is_not_a_vehicle():
+    from bankrotai.connectors.etp_sources.aukcioncenter import _asset_class
+    assert _asset_class('Сооружение, назначение: транспортное, кадастровый номер 66:44:0102002:608') == 'real_estate'
+    assert _asset_class('Здание и транспортное средство, автомобиль ГАЗ') == 'mixed'

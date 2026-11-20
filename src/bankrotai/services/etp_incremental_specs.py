@@ -12,6 +12,7 @@ ADDITIONAL_ETP_SOURCE_IDS = (
     "fabrikant.ru", "nistp.ru", "rus-on.ru", "sberbank-ast.ru", "sistematorg.com",
     "utpl.ru", "vertrades.ru", "zakazrf.ru",
 )
+LARGE_ASPNET_SOURCE_IDS = frozenset({"arbbitlot.ru", "etpu.ru", "utpl.ru"})
 
 def etp_incremental_source_specs() -> tuple[SourceSyncSpec, ...]:
     """A bounded two-page property window for approved manual source pilots.
@@ -71,7 +72,10 @@ def scheduled_etp_source_specs() -> tuple[SourceSyncSpec, ...]:
         ),
         *(SourceSyncSpec(
             source, EtpSearchFilters(page=1), reconcile_missing=False,
-            max_batches=3500 if source in {"rus-on.ru", "sistematorg.com"} else 500,
+            # These providers expose more than 500 real catalogue pages. The
+            # budget remains bounded; success still requires their actual end.
+            max_batches=(6000 if source in LARGE_ASPNET_SOURCE_IDS else
+                         3500 if source in {"rus-on.ru", "sistematorg.com"} else 500),
             require_source_end=True,
         ) for source in ADDITIONAL_ETP_SOURCE_IDS),
     )
