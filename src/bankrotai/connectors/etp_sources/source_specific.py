@@ -111,8 +111,10 @@ def apply_detail(lot: NormalizedLot, detail: NormalizedLot, *, version: int) -> 
     lot.auction_status = (
         detail.auction_status if detail.auction_status != "unknown" else lot.auction_status
     )
+    lot.application_start_at = getattr(detail, "application_start_at", None) or getattr(lot, "application_start_at", None)
     lot.application_deadline = detail.application_deadline or lot.application_deadline
     lot.auction_at = detail.auction_at or lot.auction_at
+    lot.auction_timezone = getattr(detail, "auction_timezone", None) or getattr(lot, "auction_timezone", None)
     lot.procedure_number = detail.procedure_number or lot.procedure_number
     lot.detail_level = "detail"
     raw = dict(lot.raw_data or {})

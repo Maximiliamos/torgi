@@ -399,6 +399,14 @@ def parse_detail(html: str | bytes, *, detail_url: str, external_id: str | None 
     source_status = parse_source_status(text_value)
     procedure_id = parse_procedure_id(text_value)
     title = parse_title(text_value) or "Лот"
+    category = classify_property(text_value) or "other"
+    if category == "shares" and set(flags) <= {"shares", "land", "real_estate"} and not re.search(
+            r"уставн|акци|капитал", title, re.I):
+        from bankrotai.services.asset_category import classify_category
+        offered = classify_category(title, "")
+        if offered in {"apartment", "house", "living", "commercial_room", "commercial_building",
+                       "commercial_building_with_land", "parking", "land", "real_estate"}:
+            category = "land" if offered == "land" else "real_estate"
     sale_type = LOT_URL_RE.search(detail_url)
     kind = sale_type.group(1).lower() if sale_type else ""
 
@@ -413,7 +421,7 @@ def parse_detail(html: str | bytes, *, detail_url: str, external_id: str | None 
         source_system=SOURCE_ID,
         title=title[:500],
         description=text_value[:5000],
-        category=classify_property(text_value) or "other",
+        category=category,
         region_slug=None,
         region_name=None,
         address=properties.address,

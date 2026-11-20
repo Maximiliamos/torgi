@@ -662,7 +662,7 @@ class SistematorgConnector(AuctionConnector):
                         procedure_number=procedure.procedure_number,
                     )
                 )
-        if not lots:
+        if not lots and not parsed.procedures:
             raise SourceSchemaError("sistematorg.com: no verified property lots")
         has_next = self.client.has_next_page(response.content, page)
         return ConnectorPage(
@@ -814,6 +814,7 @@ def build_source_overrides(
     profiles: tuple[EtpSourceProfile, ...],
 ) -> dict[str, type[AuctionConnector]]:
     from bankrotai.connectors.etp_sources.arbbitlot import ArbbitlotConnector
+    from bankrotai.connectors.etp_sources.alfalot import AlfalotConnector
     from bankrotai.connectors.etp_sources.fabrikant import FabrikantConnector
     from bankrotai.connectors.etp_sources.vertrades import connector_type as vertrades_type
     from bankrotai.connectors.etp_sources.zakazrf import ZakazRfConnector
@@ -833,8 +834,12 @@ def build_source_overrides(
     IntegratedFabrikantConnector.__name__ = "FabrikantConnector"
     IntegratedFabrikantConnector.__qualname__ = "FabrikantConnector"
 
+    class IntegratedAlfalotConnector(AlfalotConnector):
+        pass
+    IntegratedAlfalotConnector.profile = by_id["alfalot.ru"]
+
     return {
-        "alfalot.ru": AlfalotBlockedConnector,
+        "alfalot.ru": IntegratedAlfalotConnector,
         "centerr.ru": CenterRConnector,
         "arbbitlot.ru": ArbbitlotConnector,
         "etpu.ru": EtpuConnector,

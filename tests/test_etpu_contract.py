@@ -208,6 +208,15 @@ def test_etpu_structured_efrsb_categories(classifier: str, expected: str) -> Non
     assert expected in classifier_flags(text)
 
 
+def test_fractional_apartment_ownership_is_not_confused_with_company_equity():
+    apartment=parse_detail(_detail(classifier='Права долевой собственности',title='1/2 доля квартиры, 76:23:010101:1'),
+        detail_url='https://bankrupt.etpu.ru/public/auctions/lots/view/143436/')
+    equity=parse_detail(_detail(classifier='Права долевой собственности',title='Доля в уставном капитале общества'),
+        detail_url='https://bankrupt.etpu.ru/public/auctions/lots/view/143437/')
+    assert apartment.category=='real_estate' and apartment.raw_data['efrsb_classifier_flags']==['shares']
+    assert equity.category=='shares'
+
+
 def test_etpu_unknown_structured_classifier_fails_closed_to_other() -> None:
     parsed = parse_detail(
         _detail(

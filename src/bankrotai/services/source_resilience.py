@@ -37,6 +37,18 @@ _SOURCE_PROBE_URLS = {
     "m-ets.ru": "https://m-ets.ru/",
     "cdtrf.ru": "https://torgi.cdtrf.ru/",
     "nistp.ru": "https://nistp.ru/",
+    "alfalot.ru": "https://etp.alfalot.ru/app/SearchLots/page",
+    "arbbitlot.ru": "https://torgi.arbbitlot.ru/public/purchases-all/",
+    "aukcioncenter.ru": "https://aukcioncenter.ru/etp/trade/list.html?show=current",
+    "centerr.ru": "https://bankrupt.centerr.ru/public/purchases-all/",
+    "etpu.ru": "https://bankrupt.etpu.ru/public/purchases-all/",
+    "fabrikant.ru": "https://www.fabrikant.ru/procedure/search/sales?section_ids%5B%5D=6&page_limit=10",
+    "rus-on.ru": "https://rus-on.ru/bankrot/trade_list.php",
+    "sberbank-ast.ru": "https://utp.sberbank-ast.ru/Bankruptcy/NBT/Index/0/0/0/0",
+    "sistematorg.com": "https://sistematorg.com/tradelist.php",
+    "utpl.ru": "https://bankrupt.utpl.ru/public/purchases-all/",
+    "vertrades.ru": "https://arest.vertrades.ru/bidding",
+    "zakazrf.ru": "https://bankrot.zakazrf.ru/public/purchases-all/",
 }
 
 

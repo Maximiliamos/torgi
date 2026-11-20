@@ -14,16 +14,18 @@ def test_scheduled_nistp_detail_cap_matches_deployed_readonly_gate() -> None:
     from bankrotai.tasks import celery_app
 
     specs = {spec.source_id: spec for spec in default_source_specs()}
-    wanted = {"m-ets.ru", "cdtrf.ru", "nistp.ru"}
+    wanted = {"m-ets.ru", "cdtrf.ru", "nistp.ru", "alfalot.ru", "arbbitlot.ru", "aukcioncenter.ru",
+              "centerr.ru", "etpu.ru", "fabrikant.ru", "rus-on.ru", "sberbank-ast.ru",
+              "sistematorg.com", "utpl.ru", "vertrades.ru", "zakazrf.ru"}
     assert wanted <= set(specs)
-    assert "alfalot.ru" not in specs
+    assert len(specs) == len(default_source_specs()) == 20
     assert all(
         specs[source].reconcile_missing is False
-        and specs[source].max_batches == 500
+        and specs[source].max_batches == (3500 if source in {"rus-on.ru", "sistematorg.com"} else 500)
         and specs[source].require_source_end is True
         for source in wanted
     )
-    assert specs["nistp.ru"].max_detail_attempts_per_page == 2
+    assert specs["nistp.ru"].max_detail_attempts_per_page is None
     assert specs["m-ets.ru"].max_detail_attempts_per_page is None
     assert specs["cdtrf.ru"].max_detail_attempts_per_page is None
 
@@ -40,7 +42,7 @@ def test_home_checklist_preserves_failure_and_prints_native_diagnostics() -> Non
     verify = workflow.split(
         "- name: Verify deployed 09:00/21:00 ETP schedule and NISTP safety caps"
     )[1].split("- name: Diagnose all 22 ETP sources", 1)[0]
-    assert "max_detail_attempts_per_page == 2" in verify
+    assert "max_detail_attempts_per_page is None" in verify
     assert "$previousPreference = $ErrorActionPreference" in verify
     assert "$ErrorActionPreference = 'Continue'" in verify
     assert "$ErrorActionPreference = $previousPreference" in verify

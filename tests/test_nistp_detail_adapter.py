@@ -143,3 +143,18 @@ def test_http_redirect_and_missing_lot_fail_before_ingestion():
     connector = SOURCE_CONNECTOR_TYPES["nistp.ru"](session=session)
     with pytest.raises(ValueError, match="requested_lot_missing_in_trade_card"):
         asyncio.run(connector.fetch_lot("nistp.ru:502957:6"))
+def test_shared_moscow_dates_survive_individual_lot_enrichment():
+    from datetime import datetime
+    from bankrotai.connectors.registry import connector_registry
+    header=b'''<span>MSK_PLACEHOLDER</span><table>
+    <tr><td class="label">START_LABEL</td><td>20.11.2026 00:00:00</td></tr>
+    <tr><td class="label">END_LABEL</td><td>25.12.2026 18:30:00</td></tr>
+    <tr><td class="label">AUCTION_LABEL</td><td>29.12.2026 15:00:00</td></tr></table>'''
+    header=header.replace(b'MSK_PLACEHOLDER','время московское'.encode()).replace(b'START_LABEL','Дата начала представления заявок на участие'.encode()).replace(b'END_LABEL','Дата окончания представления заявок на участие'.encode()).replace(b'AUCTION_LABEL','Дата проведения'.encode())
+    body=shared_html().replace(b'<html><body>',b'<html><body>'+header)
+    connector=connector_registry.create('nistp.ru');connector.session=FakeSession(FakeResponse(body))
+    enriched=asyncio.run(connector.enrich_lot(listing(lot_number=4)))
+    assert enriched.application_start_at==datetime(2026,11,20)
+    assert enriched.application_deadline==datetime(2026,12,25,18,30)
+    assert enriched.auction_at==datetime(2026,12,29,15) and enriched.auction_timezone=='Europe/Moscow'
+

@@ -7,6 +7,11 @@ from bankrotai.connectors.registry.mets_sync import MetsSyncFilters
 from bankrotai.connectors.etp_sources.common import EtpSearchFilters
 from bankrotai.services.ingestion import SourceSyncSpec
 
+ADDITIONAL_ETP_SOURCE_IDS = (
+    "alfalot.ru", "arbbitlot.ru", "aukcioncenter.ru", "centerr.ru", "etpu.ru",
+    "fabrikant.ru", "nistp.ru", "rus-on.ru", "sberbank-ast.ru", "sistematorg.com",
+    "utpl.ru", "vertrades.ru", "zakazrf.ru",
+)
 
 def etp_incremental_source_specs() -> tuple[SourceSyncSpec, ...]:
     """A bounded two-page property window for approved manual source pilots.
@@ -52,9 +57,8 @@ def scheduled_etp_source_specs() -> tuple[SourceSyncSpec, ...]:
     These runs prove and exhaust each selected paginator, but intentionally
     never claim complete provider inventory and never reconcile or archive
     missing lots. NISTP keeps its active-row/detail eligibility gates.
-    Alfalot is not returned here until the browser-confirmed ``stateFilter_GD``
-    request contract is captured; the legacy SUPCOMING URL is a different
-    (upcoming) catalogue and must not be scheduled as active applications.
+    Alfalot uses the browser-verified public GD sales servlet, with individual
+    card validation. Every additional ETP remains non-reconciling.
     """
     return (
         SourceSyncSpec(
@@ -65,9 +69,9 @@ def scheduled_etp_source_specs() -> tuple[SourceSyncSpec, ...]:
             "cdtrf.ru", CdtrfSyncFilters(page_size=100),
             reconcile_missing=False, max_batches=500, require_source_end=True,
         ),
-        SourceSyncSpec(
-            "nistp.ru", EtpSearchFilters(page=1),
-            reconcile_missing=False, max_batches=500, require_source_end=True,
-            max_detail_attempts_per_page=2,
-        ),
+        *(SourceSyncSpec(
+            source, EtpSearchFilters(page=1), reconcile_missing=False,
+            max_batches=3500 if source in {"rus-on.ru", "sistematorg.com"} else 500,
+            require_source_end=True,
+        ) for source in ADDITIONAL_ETP_SOURCE_IDS),
     )

@@ -7,6 +7,7 @@ from typing import Any, Callable
 from bankrotai.db import LotSyncSourceRun, session_scope
 from bankrotai.services.ingestion import default_source_specs, fast_source_specs, source_full_specs
 from bankrotai.services.ingestion_incremental import incremental_specs, retry_specs
+from bankrotai.services.etp_incremental_specs import ADDITIONAL_ETP_SOURCE_IDS
 
 
 SEVEN_SOURCE_IDS = frozenset({
@@ -18,6 +19,15 @@ SEVEN_SOURCE_IDS = frozenset({
     "cdtrf.ru",
     "nistp.ru",
 })
+SCHEDULED_SOURCE_IDS = SEVEN_SOURCE_IDS | frozenset(ADDITIONAL_ETP_SOURCE_IDS)
+
+
+def production_scheduled_specs() -> tuple[Any, ...]:
+    specs = tuple(spec for spec in default_source_specs() if str(spec.source_id) in SCHEDULED_SOURCE_IDS)
+    observed = [str(spec.source_id) for spec in specs]
+    if set(observed) != SCHEDULED_SOURCE_IDS or len(observed) != len(set(observed)):
+        raise RuntimeError("Scheduled source specification is incomplete or duplicated")
+    return specs
 
 
 def production_seven_specs() -> tuple[Any, ...]:
@@ -65,7 +75,7 @@ def resolve_nationwide_specs(
     if mode == "full":
         return unpaused(default_source_specs())
     if mode == "incremental":
-        return unpaused(incremental_specs(production_seven_specs()))
+        return unpaused(incremental_specs(production_scheduled_specs()))
     if mode.startswith("source-fast:"):
         source_system = mode.removeprefix("source-fast:")
         specs = tuple(
@@ -89,7 +99,7 @@ def scheduled_specs(
     mode: str,
     unpaused: Callable[[tuple[Any, ...]], tuple[Any, ...]],
 ) -> tuple[Any, ...]:
-    base = production_seven_specs()
+    base = production_scheduled_specs()
     return unpaused(incremental_specs(base) if mode == "incremental" else base)
 
 

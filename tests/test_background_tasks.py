@@ -328,7 +328,7 @@ def test_automatic_nationwide_refresh_uses_existing_run_lease(monkeypatch) -> No
     assert created == {
         "triggered_by": "celery-beat",
         "trigger_type": "scheduled_fast",
-        "total_sources": 7,
+        "total_sources": 19,
     }
 
 
@@ -371,7 +371,7 @@ def test_scheduled_incremental_persists_preflight_and_continues_on_one_source_fa
             result["preflight_warning"] = "source_preflight_failed"
             return result
 
-    specs = tuple(SimpleNamespace(source_id=x) for x in sorted(tasks.SEVEN_SOURCE_IDS))
+    specs = tuple(SimpleNamespace(source_id=x) for x in sorted(tasks.SCHEDULED_SOURCE_IDS))
     preflight = {
         "success": False,
         "checked": 7,
@@ -485,7 +485,7 @@ def test_scheduled_incremental_persists_missing_source_skip(monkeypatch) -> None
 
     specs = tuple(
         SimpleNamespace(source_id=x)
-        for x in sorted(tasks.SEVEN_SOURCE_IDS - {"nistp.ru"})
+        for x in sorted(tasks.SCHEDULED_SOURCE_IDS - {"nistp.ru"})
     )
 
     monkeypatch.setattr(

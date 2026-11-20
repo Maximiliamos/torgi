@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+import requests
 
 from bankrotai.connectors.base import AuctionConnector
 from bankrotai.connectors.etp_sources import PROFILES, SOURCE_CONNECTOR_TYPES
@@ -34,11 +35,15 @@ def test_all_twelve_agent_sources_remain_registered() -> None:
 
 
 def test_unproven_alfalot_contract_is_fail_closed() -> None:
-    connector = SOURCE_CONNECTOR_TYPES["alfalot.ru"]()
+    class BrokenSession(requests.Session):
+        def get(self,url,**kwargs):
+            response=requests.Response();response.url=url;response.status_code=200;response._content=b'{}'
+            return response
+    connector = SOURCE_CONNECTOR_TYPES["alfalot.ru"](session=BrokenSession())
     with pytest.raises(Exception, match="(?i)(alfalot|contract|verified|production|http)"):
         asyncio.run(connector.search({}))
     health = asyncio.run(connector.healthcheck())
-    assert health.status == "blocked"
+    assert health.status == "degraded"
 
 
 def test_verified_source_specific_connectors_own_detail_enrichment() -> None:
