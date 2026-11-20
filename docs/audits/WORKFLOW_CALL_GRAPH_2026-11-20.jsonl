@@ -1,0 +1,9 @@
+{"path":".github/workflows/branch-disposition-audit.yml","invoked_scripts":["scripts/branch_disposition_audit.py"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/branch-hygiene.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/cdtrf-one-time-import-geo-map.yml","invoked_scripts":[],"upstream_workflow_names":["P11 production acceptance"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/cdtrf-source-diagnostics.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/ci.yml","invoked_scripts":["scripts/check-repository-consistency.py","scripts/check_module_sizes.py","scripts/check_action_pins.py","scripts/diagnose_mets_public_origins.py","scripts/check-build-audit.test.mjs","scripts/check-build-audit.mjs","scripts/launch-seven-source-gated.ps1","scripts/docker-smoke-readonly.sh","scripts/docker-smoke-operator.sh"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/cloudflare-edge-deploy.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":true}
+{"path":".github/workflows/etp-22-source-readonly-inventory.yml","invoked_scripts":[],"upstream_workflow_names":["Deploy home secondary origin"],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/etp-all-new-sources-import-geo-map.yml","invoked_scripts":["scripts/ensure-docker-for-backup.ps1"],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
+{"path":".github/workflows/etp-cdtrf-full-catalogue-readonly.yml","invoked_scripts":[],"upstream_workflow_names":[],"manual_gate_on_automatic_event":false}
